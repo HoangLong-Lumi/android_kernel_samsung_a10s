@@ -22,6 +22,7 @@
 #include <linux/interrupt.h>
 #include <linux/suspend.h>
 #include <linux/timer.h>
+#include <linux/kobject.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -60,6 +61,7 @@
 struct adsp_regs adspreg;
 char *adsp_core_ids[ADSP_CORE_TOTAL] = {"ADSP A"};
 unsigned int adsp_ready[ADSP_CORE_TOTAL];
+unsigned int adsp_enable;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *adsp_debugfs;
 #endif
@@ -119,18 +121,6 @@ void adsp_A_unregister_notify(struct notifier_block *nb)
 EXPORT_SYMBOL_GPL(adsp_A_unregister_notify);
 
 #ifdef CFG_RECOVERY_SUPPORT
-static int adsp_event_receive(struct notifier_block *this, unsigned long event,
-			    void *ptr)
-{
-	adsp_read_status_release(event);
-	return 0;
-}
-
-static struct notifier_block adsp_ready_notifier1 = {
-	.notifier_call = adsp_event_receive,
-	.priority = AUDIO_HAL_FEATURE_PRI,
-};
-
 void adsp_extern_notify(enum ADSP_NOTIFY_EVENT notify_status)
 {
 	blocking_notifier_call_chain(&adsp_A_notifier_list,
@@ -675,6 +665,41 @@ static void adsp_syscore_resume(void)
 	}
 }
 
+#ifdef CFG_RECOVERY_SUPPORT
+/* user-space event notify */
+static int adsp_user_event_notify(struct notifier_block *nb,
+				  unsigned long event, void *ptr)
+{
+	struct device *dev = adsp_device.this_device;
+	int ret = 0;
+
+	if (!dev)
+		return NOTIFY_DONE;
+
+	switch (event) {
+	case ADSP_EVENT_STOP:
+		ret = kobject_uevent(&dev->kobj, KOBJ_OFFLINE);
+		break;
+	case ADSP_EVENT_READY:
+		ret = kobject_uevent(&dev->kobj, KOBJ_ONLINE);
+		break;
+	default:
+		pr_info("%s, ignore event %lu", __func__, event);
+		break;
+	}
+
+	if (ret)
+		pr_info("%s, uevent(%lu) fail, ret %d", __func__, event, ret);
+
+	return NOTIFY_OK;
+}
+
+struct notifier_block adsp_uevent_notifier = {
+	.notifier_call = adsp_user_event_notify,
+	.priority = AUDIO_HAL_FEATURE_PRI,
+};
+#endif
+
 static int adsp_device_probe(struct platform_device *pdev)
 {
 	struct resource *res;
@@ -733,10 +758,7 @@ static int adsp_device_probe(struct platform_device *pdev)
 	adspreg.clkctrl = adspreg.cfg + ADSP_CLK_CTRL_OFFSET;
 	adsp_clk_device_probe(&pdev->dev);
 
-#if ENABLE_ADSP_EMI_PROTECTION
-	set_adsp_mpu(adspreg.sharedram, adspreg.shared_size);
-#endif
-
+	adsp_enable = 1;
 	return 0;
 ERROR:
 	return -ENODEV;
@@ -784,6 +806,7 @@ static int __init adsp_init(void)
 {
 	int ret = 0;
 
+	adsp_enable = 0;
 	ret = platform_driver_register(&mtk_adsp_device);
 	if (unlikely(ret != 0)) {
 		pr_err("[ADSP] platform driver register fail\n");
@@ -806,6 +829,11 @@ static int __init adsp_module_init(void)
 {
 	int ret = 0;
 
+	if (!adsp_enable) {
+		pr_info("[adsp] core 0 is not enabled\n");
+		return ret;
+	}
+
 	adsp_workqueue = create_workqueue("ADSP_WQ");
 #ifdef CONFIG_DEBUG_FS
 	adsp_debugfs = debugfs_create_file("audiodsp", S_IFREG | 0644, NULL,
@@ -814,12 +842,8 @@ static int __init adsp_module_init(void)
 		return PTR_ERR(adsp_debugfs);
 #endif
 	/* adsp initialize */
-	ret = adsp_get_devinfo();
-	if (ret)
-		goto ERROR;
 	adsp_dvfs_init();
 	adsp_power_on(true);
-	writel(adspreg.segment, ADSP_SEGMENT_CON);
 	adsp_update_memory_protect_info();
 	adsp_awake_init();
 
@@ -849,7 +873,7 @@ static int __init adsp_module_init(void)
 #endif
 #ifdef CFG_RECOVERY_SUPPORT
 	adsp_recovery_init();
-	adsp_A_register_notify(&adsp_ready_notifier1);
+	adsp_A_register_notify(&adsp_uevent_notifier);
 #endif
 #if ADSP_BUS_MONITOR_INIT_ENABLE
 	adsp_bus_monitor_init();
@@ -861,8 +885,10 @@ static int __init adsp_module_init(void)
 			jiffies + ADSP_READY_TIMEOUT);
 #endif
 	pr_debug("[ADSP] driver_init_done\n");
+	return ret;
 
 ERROR:
+	pr_info("%s fail ret(%d)\n", __func__, ret);
 	return ret;
 }
 
@@ -885,7 +911,16 @@ static void __exit adsp_exit(void)
 	destroy_workqueue(adsp_reset_workqueue);
 #endif
 }
+
+static int __init adsp_late_init(void)
+{
+	adsp_set_emimpu_region();
+	pr_info("[ADSP] late_init done\n");
+	return 0;
+}
+
 subsys_initcall(adsp_init);
 module_init(adsp_module_init);
 module_exit(adsp_exit);
+late_initcall(adsp_late_init);
 

@@ -20,6 +20,18 @@
 
 #include <mt-plat/aee.h>
 
+struct module_sect_attr {
+	struct module_attribute mattr;
+	char *name;
+	unsigned long address;
+};
+
+struct module_sect_attrs {
+	struct attribute_group grp;
+	unsigned int nsections;
+	struct module_sect_attr attrs[0];
+};
+
 #ifdef MODULE
 struct aee_sym {
 	char name[KSYM_NAME_LEN];
@@ -269,6 +281,9 @@ int aee_save_modules(char *mbuf, int mbufsize)
 {
 	struct module *mod;
 	int sz = 0;
+	unsigned long text_addr = 0;
+	unsigned long init_addr = 0;
+	int i, search_nm;
 
 	if (!mbuf || mbufsize <= 0) {
 		pr_info("mrdump: module info buffer wrong(sz:%d)\n", mbufsize);
@@ -293,10 +308,26 @@ int aee_save_modules(char *mbuf, int mbufsize)
 					mbufsize);
 			break;
 		}
-		sz += snprintf(mbuf + sz, mbufsize - sz, " %s %px %px %d %d",
+		text_addr = (unsigned long)mod->core_layout.base;
+		init_addr = (unsigned long)mod->init_layout.base;
+		search_nm = 2;
+		for (i = 0; i < mod->sect_attrs->nsections; i++) {
+			if (!strcmp(mod->sect_attrs->attrs[i].name, ".text")) {
+				text_addr = mod->sect_attrs->attrs[i].address;
+				search_nm--;
+			} else if (!strcmp(mod->sect_attrs->attrs[i].name,
+					   ".init.text")) {
+				init_addr = mod->sect_attrs->attrs[i].address;
+				search_nm--;
+			}
+			if (!search_nm)
+				break;
+		}
+		sz += snprintf(mbuf + sz, mbufsize - sz,
+				" %s %lx %lx %d %d",
 				mod->name,
-				mod->core_layout.base,
-				mod->init_layout.base,
+				text_addr,
+				init_addr,
 				mod->core_layout.size,
 				mod->init_layout.size);
 	}
@@ -305,13 +336,19 @@ int aee_save_modules(char *mbuf, int mbufsize)
 	return sz;
 }
 
+#ifdef __aarch64__
 static u64 *p__cpu_logical_map;
 static u64 *aee_cpu_logical_map(void)
+#else
+static u32 *p__cpu_logical_map;
+static u32 *aee_cpu_logical_map(void)
+#endif
 {
 	if (p__cpu_logical_map)
 		return p__cpu_logical_map;
 
-	p__cpu_logical_map = (u64 *)aee_addr_find("__cpu_logical_map");
+
+	p__cpu_logical_map = (void *)aee_addr_find("__cpu_logical_map");
 	if (p__cpu_logical_map)
 		return p__cpu_logical_map;
 
@@ -340,29 +377,26 @@ int get_HW_cpuid(void)
 }
 EXPORT_SYMBOL(get_HW_cpuid);
 
-static u32 (*p_log_buf_len_get)(void);
 u32 aee_log_buf_len_get(void)
 {
-	if (p_log_buf_len_get)
-		return p_log_buf_len_get();
+	u32 log_buf_len = 1 << CONFIG_LOG_BUF_SHIFT;
 
-	p_log_buf_len_get = (void *)aee_addr_find("log_buf_len_get");
-	if (p_log_buf_len_get)
-		return p_log_buf_len_get();
+	if (log_buf_len > 0 && log_buf_len <= (1 << 25))
+		return log_buf_len;
 
-	pr_info("%s failed", __func__);
 	return 0;
 }
 
-static char *(*p_log_buf_addr_get)(void);
+static char *p__log_buf;
 char *aee_log_buf_addr_get(void)
 {
-	if (p_log_buf_addr_get)
-		return p_log_buf_addr_get();
+	if (p__log_buf)
+		return p__log_buf;
 
-	p_log_buf_addr_get = (void *)aee_addr_find("log_buf_addr_get");
-	if (p_log_buf_addr_get)
-		return p_log_buf_addr_get();
+	p__log_buf = (void *)(aee_addr_find("__log_buf"));
+
+	if (p__log_buf)
+		return p__log_buf;
 
 	pr_info("%s failed", __func__);
 	return NULL;
@@ -388,8 +422,13 @@ static unsigned long *aee_irq_stack_ptr(void)
 bool aee_on_irq_stack(unsigned long sp, struct stack_info *info)
 {
 	unsigned long *isp = aee_irq_stack_ptr();
-	unsigned long low = (unsigned long)raw_cpu_read(*isp);
-	unsigned long high = low + IRQ_STACK_SIZE;
+	unsigned long low, high;
+
+	if (!isp)
+		return false;
+
+	low = (unsigned long)raw_cpu_read(*isp);
+	high = low + IRQ_STACK_SIZE;
 
 	if (!low)
 		return false;
@@ -425,6 +464,8 @@ pgd_t *aee_pgd_offset_k(unsigned long addr)
 {
 	struct mm_struct *pim = aee_init_mm();
 
+	if (!pim)
+		return NULL;
 	return (pgd_t *)pgd_offset(pim, addr);
 }
 
@@ -516,6 +557,22 @@ void aee_zap_locks(void)
 	sema_init(p_console_sem, 1);
 }
 
+static raw_spinlock_t *p_die_lock;
+void aee_reinit_die_lock(void)
+{
+	if (!p_die_lock) {
+		p_die_lock = (void *)aee_addr_find("die_lock");
+		if (!p_die_lock) {
+			aee_sram_printk("%s failed to get die_lock\n",
+					__func__);
+			return;
+		}
+	}
+
+	/* If a crash is occurring, make sure we not deadlock */
+	raw_spin_lock_init(p_die_lock);
+}
+
 /* for aee_aed.ko */
 static const char *(*p_arch_vma_name)(struct vm_area_struct *vma);
 const char *aee_arch_vma_name(struct vm_area_struct *vma)
@@ -605,46 +662,11 @@ void aee_print_modules(void)
 	print_modules();
 }
 
-static struct list_head *p_modules;
+extern int save_modules(char *mbuf, int mbufsize);
 /* MUST ensure called when preempt disabled already */
 int aee_save_modules(char *mbuf, int mbufsize)
 {
-	struct module *mod;
-	int sz = 0;
-
-	if (!mbuf || mbufsize <= 0) {
-		pr_info("mrdump: module info buffer wrong(sz:%d)\n", mbufsize);
-		return sz;
-	}
-
-	if (!p_modules)
-		p_modules = (void *)kallsyms_lookup_name("modules");
-
-	if (!p_modules) {
-		pr_info("%s failed", __func__);
-		return sz;
-	}
-
-	memset(mbuf, '\0', mbufsize);
-	sz += snprintf(mbuf + sz, mbufsize - sz, "Modules linked in:");
-	list_for_each_entry_rcu(mod, p_modules, list) {
-		if (mod->state == MODULE_STATE_UNFORMED)
-			continue;
-		if (sz >= mbufsize) {
-			pr_info("mrdump: module info buffer full(sz:%d)\n",
-					mbufsize);
-			break;
-		}
-		sz += snprintf(mbuf + sz, mbufsize - sz, " %s %px %px %d %d",
-				mod->name,
-				mod->core_layout.base,
-				mod->init_layout.base,
-				mod->core_layout.size,
-				mod->init_layout.size);
-	}
-	if (sz < mbufsize)
-		sz += snprintf(mbuf + sz, mbufsize - sz, "\n");
-	return sz;
+	return save_modules(mbuf, mbufsize);
 }
 
 int get_HW_cpuid(void)
@@ -710,32 +732,26 @@ void aee__flush_dcache_area(void *addr, size_t len)
 	__flush_dcache_area(addr, len);
 }
 
-raw_spinlock_t *p_logbuf_lock;
-struct semaphore *p_console_sem;
 void aee_zap_locks(void)
 {
-	if (!p_logbuf_lock) {
-		p_logbuf_lock = (void *)kallsyms_lookup_name("logbuf_lock");
-		if (!p_logbuf_lock) {
-			aee_sram_printk("%s failed to get logbuf lock\n",
-					__func__);
-			return;
-		}
-	}
-	if (!p_console_sem) {
-		p_console_sem = (void *)kallsyms_lookup_name("console_sem");
-		if (!p_console_sem) {
-			aee_sram_printk("%s failed to get console_sem\n",
+	aee_wdt_zap_locks();
+}
+
+
+static raw_spinlock_t *p_die_lock;
+void aee_reinit_die_lock(void)
+{
+	if (!p_die_lock) {
+		p_die_lock = (void *)kallsyms_lookup_name("die_lock");
+		if (!p_die_lock) {
+			aee_sram_printk("%s failed to get die_lock\n",
 					__func__);
 			return;
 		}
 	}
 
-	debug_locks_off();
-	/* If a crash is occurring, make sure we can't deadlock */
-	raw_spin_lock_init(p_logbuf_lock);
-	/* And make sure that we print immediately */
-	sema_init(p_console_sem, 1);
+	/* If a crash is occurring, make sure we not deadlock */
+	raw_spin_lock_init(p_die_lock);
 }
 
 /* for aee_aed.ko */

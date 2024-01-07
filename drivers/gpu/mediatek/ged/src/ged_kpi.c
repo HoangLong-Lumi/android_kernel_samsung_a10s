@@ -203,12 +203,6 @@ struct GED_KPI_GPU_TS {
 	struct dma_fence *psSyncFence;
 };
 
-
-
-
-
-
-
 #define GED_KPI_TOTAL_ITEMS 64
 #define GED_KPI_UID(pid, wnd) (pid | ((unsigned long)wnd))
 #define SCREEN_IDLE_PERIOD 500000000
@@ -217,7 +211,7 @@ struct GED_KPI_GPU_TS {
 static int is_game_control_frame_rate;
 static int target_fps_4_main_head = 60;
 static long long vsync_period = GED_KPI_SEC_DIVIDER / GED_KPI_MAX_FPS;
-static GED_LOG_BUF_HANDLE ghLogBuf;
+static GED_LOG_BUF_HANDLE ghLogBuf_KPI;
 static struct workqueue_struct *g_psWorkQueue;
 static GED_HASHTABLE_HANDLE gs_hashtable;
 #ifdef GED_ENABLE_TIMER_BASED_DVFS_MARGIN
@@ -268,7 +262,7 @@ static unsigned long long g_gpu_freq_accum;
 static unsigned int g_frame_count;
 
 static int gx_game_mode;
-static int gx_3D_benchmark_on;
+static int gx_boost_on;
 #ifdef GED_KPI_CPU_BOOST
 static int gx_force_cpu_boost;
 static int gx_top_app_pid;
@@ -306,7 +300,7 @@ module_param(boost_upper_bound, int, 0644);
 module_param(enable_game_self_frc_detect, int, 0644);
 #endif /* GED_KPI_CPU_BOOST */
 module_param(gx_game_mode, int, 0644);
-module_param(gx_3D_benchmark_on, int, 0644);
+module_param(gx_boost_on, int, 0644);
 
 int (*ged_kpi_push_game_frame_time_fp_fbt)(
 	pid_t pid,
@@ -784,8 +778,8 @@ static void ged_kpi_statistics_and_remove(struct GED_KPI_HEAD *psHead,
 	psKPI->cpu_gpu_info.gpu.dvfs_loading_mode = dvfs_loading_mode;
 #endif /* GED_ENABLE_DVFS_LOADING_MODE */
 	/* statistics */
-	ged_log_buf_print(ghLogBuf,
-		"%d,%llu,%lu,%lu,%lu,%llu,%llu,%llu,%llu,%llu,%llu,%lu,",
+	ged_log_buf_print(ghLogBuf_KPI,
+		"%d,%llu,%lu,%lu,%lu,%llu,%llu,%llu,%llu,%llu,%llu,%lu,%d,%d,%lld,%d,%lld,%lld,%llu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u",
 		psHead->pid,
 		psHead->ullWnd,
 		psKPI->i32QueueID,
@@ -798,7 +792,6 @@ static void ged_kpi_statistics_and_remove(struct GED_KPI_HEAD *psHead,
 		psKPI->ullTimeStampS,
 		psKPI->ullTimeStampH,
 		gpu_info,
-		"%d,%d,%lld,%d,%lld,%lld,%llu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u",
 		psKPI->boost_accum_cpu,
 		psKPI->boost_accum_gpu,
 		psKPI->t_cpu_remained_pred,
@@ -1114,7 +1107,7 @@ static GED_BOOL ged_kpi_update_TargetTimeAndTargetFps(
 
 		if (is_game_control_frame_rate && (psHead == main_head)
 			&& (psHead->frc_mode == GED_KPI_FRC_DEFAULT_MODE)
-			&& (gx_3D_benchmark_on == 0))
+			&& (gx_boost_on == 0))
 			target_fps = target_fps_4_main_head;
 		psHead->target_fps = target_fps;
 		psHead->target_fps_margin = target_fps_margin;
@@ -1687,6 +1680,12 @@ static void ged_kpi_work_cb(struct work_struct *psWork)
 						time_spent, psKPI->t_gpu_target
 						, psKPI->target_fps_margin
 						, 1); /* fallback mode */
+				else
+					/* t_gpu is not accurate, so hint -1 */
+					gpu_freq_pre = ged_kpi_gpu_dvfs(
+						-1, psKPI->t_gpu_target
+						, psKPI->target_fps_margin
+						, 0); /* do nothing */
 				last_3D_done = cur_3D_done;
 
 				if (!g_force_gpu_dvfs_fallback)
@@ -2290,11 +2289,13 @@ unsigned int ged_kpi_get_cur_avg_gpu_freq(void)
 GED_ERROR ged_kpi_system_init(void)
 {
 #ifdef MTK_GED_KPI
-
-	ghLogBuf = ged_log_buf_alloc(GED_KPI_MAX_FPS * 10,
+#ifndef GED_BUFFER_LOG_DISABLE
+	ghLogBuf_KPI = ged_log_buf_alloc(GED_KPI_MAX_FPS * 10,
 		220 * GED_KPI_MAX_FPS * 10,
 		GED_LOG_BUF_TYPE_RINGBUFFER, NULL, "KPI");
-
+#else
+	ghLogBuf_KPI = 0;
+#endif /* GED_BUFFER_LOG_DISABLE */
 	g_psWorkQueue =
 		alloc_ordered_workqueue("ged_kpi",
 			WQ_FREEZABLE | WQ_MEM_RECLAIM);
@@ -2331,8 +2332,10 @@ void ged_kpi_system_exit(void)
 #endif /* GED_ENABLE_TIMER_BASED_DVFS_MARGIN */
 	destroy_workqueue(g_psWorkQueue);
 	ged_thread_destroy(ghThread);
-	ged_log_buf_free(ghLogBuf);
-	ghLogBuf = 0;
+#ifndef GED_BUFFER_LOG_DISABLE
+	ged_log_buf_free(ghLogBuf_KPI);
+	ghLogBuf_KPI = 0;
+#endif /* GED_BUFFER_LOG_DISABLE */
 #endif /* MTK_GED_KPI */
 }
 /* ------------------------------------------------------------------- */

@@ -147,7 +147,7 @@ unsigned int mtkfb_query_buf_va(unsigned int session_id,
 	unsigned int layer_id, unsigned int idx);
 unsigned int mtkfb_update_buf_ticket(unsigned int session_id,
 	unsigned int layer_id, unsigned int idx, unsigned int ticket);
-unsigned int mtkfb_query_idx_by_ticket(unsigned int session_id,
+int mtkfb_query_idx_by_ticket(unsigned int session_id,
 	unsigned int layer_id, unsigned int ticket);
 bool mtkfb_update_buf_info_new(unsigned int session_id,
 	unsigned int mva_offset, struct disp_input_config *buf_info);
@@ -171,10 +171,11 @@ void mtkfb_update_present_fence_ticket(unsigned int session_id, int fence,
 	unsigned int ticket);
 void mtkfb_update_fence_trigger_ticket(unsigned int session_id,
 	unsigned int layer_id, int fence, unsigned int ticket);
-void mtkfb_release_present_fence(unsigned int session_id, int fence);
+//void mtkfb_release_present_fence(unsigned int session_id, int fence);
 void mtkfb_release_layer_fence(unsigned int session_id, unsigned int layer_id);
 int mtkfb_fence_clean_thread(void *data);
 int mtkfb_fence_timeline_index(void);
+void mtkfb_release_present_fence(unsigned int session_id,	unsigned int fence_idx);
 
 struct mtkfb_fence_buf_info *disp_sync_prepare_buf(
 	struct disp_buffer_info *buf);

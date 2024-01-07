@@ -64,6 +64,8 @@ struct anon_vma {
 
 	/* Interval tree of private "related" vmas */
 	struct rb_root_cached rb_root;
+	/* key to tell if a valid anon_vma type */
+	unsigned long private;
 };
 
 /*
@@ -280,6 +282,9 @@ struct rmap_walk_control {
 	 * Return false if page table scanning in rmap_walk should be stopped.
 	 * Otherwise, return true.
 	 */
+#ifdef CONFIG_PAGE_BOOST
+	int ret;
+#endif
 	bool (*rmap_one)(struct page *page, struct vm_area_struct *vma,
 					unsigned long addr, void *arg);
 	int (*done)(struct page *page);

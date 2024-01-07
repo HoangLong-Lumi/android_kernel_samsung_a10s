@@ -13,7 +13,6 @@
 #include <linux/iio/consumer.h>
 #include <linux/slab.h>
 #include <linux/version.h>
-#include <linux/completion.h>
 #include <linux/atomic.h>
 #include <linux/wait.h>
 #include <linux/kthread.h>
@@ -108,7 +107,8 @@ struct mt6360_pmu_chg_info {
 	struct tcpc_device *tcpc_dev;
 	struct notifier_block pd_nb;
 	/*chg_det*/
-	struct completion chrdet_start;
+	wait_queue_head_t attach_wq;
+	atomic_t chrdet_start;
 	struct task_struct *attach_task;
 	struct mutex attach_lock;
 	bool typec_attach;
@@ -126,7 +126,7 @@ struct mt6360_pmu_chg_info {
 	atomic_t pe_complete;
 	/* mivr */
 	atomic_t mivr_cnt;
-	wait_queue_head_t waitq;
+	wait_queue_head_t mivr_wq;
 	struct task_struct *mivr_task;
 	/* unfinish pe pattern */
 	struct workqueue_struct *pe_wq;
@@ -689,7 +689,7 @@ static int mt6360_chgdet_post_process(struct mt6360_pmu_chg_info *mpci)
 	case MT6360_CHG_TYPE_SDPNSTD:
 		dev_info(mpci->dev,
 			  "%s: Charger Type: NONSTANDARD_CHARGER\n", __func__);
-		mpci->psy_desc.type = POWER_SUPPLY_TYPE_USB_DCP;
+		mpci->psy_desc.type = POWER_SUPPLY_TYPE_USB;
 		mpci->psy_usb_type = POWER_SUPPLY_USB_TYPE_DCP;
 		break;
 	case MT6360_CHG_TYPE_CDP:
@@ -711,7 +711,7 @@ out:
 		if (ret < 0)
 			dev_notice(mpci->dev, "%s: disable chgdet fail\n",
 				   __func__);
-	} else if (mpci->psy_usb_type != POWER_SUPPLY_USB_TYPE_DCP)
+	} else if (mpci->psy_desc.type != POWER_SUPPLY_TYPE_USB_DCP)
 		mt6360_set_usbsw_state(mpci, MT6360_USBSW_USB);
 	if (!inform_psy)
 		return ret;
@@ -1726,9 +1726,7 @@ static int mt6360_safety_check(struct charger_device *chg_dev, u32 polling_ieoc)
 	if (eoc_cnt == 3) {
 		dev_info(mpci->dev, "%s: polling_ieoc = %d, ibat = %d\n",
 			 __func__, polling_ieoc, ibat);
-#ifdef FIXME /* TODO: wait mtk_charger_intf.h */
 		charger_dev_notify(mpci->chg_dev, CHARGER_DEV_NOTIFY_EOC);
-#endif
 		eoc_cnt = 0;
 	}
 	return ret;
@@ -2093,13 +2091,12 @@ static irqreturn_t mt6360_pmu_chg_mivr_evt_handler(int irq, void *data)
 	mt_dbg(mpci->dev, "%s\n", __func__);
 	mt6360_pmu_chg_irq_enable("chg_mivr_evt", 0);
 	atomic_inc(&mpci->mivr_cnt);
-	wake_up(&mpci->waitq);
+	wake_up(&mpci->mivr_wq);
 	return IRQ_HANDLED;
 }
 
 static irqreturn_t mt6360_pmu_pwr_rdy_evt_handler(int irq, void *data)
 {
-#ifdef FIXME
 	struct mt6360_pmu_chg_info *mpci = data;
 	bool pwr_rdy = false;
 	int ret = 0;
@@ -2109,7 +2106,7 @@ static irqreturn_t mt6360_pmu_pwr_rdy_evt_handler(int irq, void *data)
 		return ret;
 	pwr_rdy = (ret & MT6360_MASK_PWR_RDY_EVT);
 	dev_info(mpci->dev, "%s: pwr_rdy = %d\n", __func__, pwr_rdy);
-#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -2191,9 +2188,8 @@ static irqreturn_t mt6360_pmu_chg_tmri_handler(int irq, void *data)
 	dev_info(mpci->dev, "%s: chg_stat4 = 0x%02x\n", __func__, ret);
 	if (!(ret & MT6360_MASK_CHG_TMRI))
 		return IRQ_HANDLED;
-#ifdef FIXME /* TODO: wait mtk_charger_intf.h */
 	charger_dev_notify(mpci->chg_dev, CHARGER_DEV_NOTIFY_SAFETY_TIMEOUT);
-#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -2540,8 +2536,11 @@ static int mt6360_chg_mivr_task_threadfn(void *data)
 
 	dev_info(mpci->dev, "%s ++\n", __func__);
 	while (!kthread_should_stop()) {
-		wait_event(mpci->waitq, atomic_read(&mpci->mivr_cnt) > 0);
+		wait_event(mpci->mivr_wq, atomic_read(&mpci->mivr_cnt) > 0 ||
+							 kthread_should_stop());
 		mt_dbg(mpci->dev, "%s: enter mivr thread\n", __func__);
+		if (kthread_should_stop())
+			break;
 		pm_stay_awake(mpci->dev);
 		/* check real mivr stat or not */
 		ret = mt6360_pmu_reg_read(mpci->mpi, MT6360_PMU_CHG_STAT1);
@@ -2569,8 +2568,6 @@ loop_cont:
 		pm_relax(mpci->dev);
 		atomic_set(&mpci->mivr_cnt, 0);
 		mt6360_pmu_chg_irq_enable("chg_mivr_evt", 1);
-		if (kthread_should_stop())
-			break;
 		msleep(200);
 	}
 	dev_info(mpci->dev, "%s --\n", __func__);
@@ -2925,8 +2922,16 @@ void mt6360_recv_batoc_callback(BATTERY_OC_LEVEL tag)
 static int mt6360_charger_get_online(struct mt6360_pmu_chg_info *mpci,
 				     union power_supply_propval *val)
 {
+#ifndef CONFIG_TCPC_CLASS
 	int ret;
+#endif
 	bool uvp_d_stat;
+
+#ifdef CONFIG_TCPC_CLASS
+	mutex_lock(&mpci->attach_lock);
+	uvp_d_stat = mpci->attach;
+	mutex_unlock(&mpci->attach_lock);
+#else
 	/*uvp_d_stat=true => vbus_on=1*/
 	ret = mt6360_get_chrdet_ext_stat(mpci, &uvp_d_stat);
 	if (ret < 0) {
@@ -2934,6 +2939,8 @@ static int mt6360_charger_get_online(struct mt6360_pmu_chg_info *mpci,
 			"%s: read uvp_d_stat fail\n", __func__);
 		return ret;
 	}
+#endif
+	dev_info(mpci->dev, "%s: online = %d\n", __func__, uvp_d_stat);
 	val->intval = uvp_d_stat;
 
 	return 0;
@@ -2949,8 +2956,7 @@ static int mt6360_charger_get_property(struct power_supply *psy,
 				       enum power_supply_property psp,
 				       union power_supply_propval *val)
 {
-	struct mt6360_pmu_chg_info *mpci =
-						  power_supply_get_drvdata(psy);
+	struct mt6360_pmu_chg_info *mpci = power_supply_get_drvdata(psy);
 	enum mt6360_charging_status chg_stat = MT6360_CHG_STATUS_MAX;
 	int ret = 0;
 
@@ -2958,6 +2964,9 @@ static int mt6360_charger_get_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
 		ret = mt6360_charger_get_online(mpci, val);
+		break;
+	case POWER_SUPPLY_PROP_TYPE:
+		val->intval = mpci->psy_desc.type;
 		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		val->intval = mpci->psy_usb_type;
@@ -2984,6 +2993,14 @@ static int mt6360_charger_get_property(struct power_supply *psy,
 			ret = -ENODATA;
 			break;
 		}
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		if (mpci->psy_desc.type == POWER_SUPPLY_TYPE_USB)
+			val->intval = 500000;
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		if (mpci->psy_desc.type == POWER_SUPPLY_TYPE_USB)
+			val->intval = 5000000;
 		break;
 	default:
 		ret = -ENODATA;
@@ -3025,6 +3042,8 @@ static enum power_supply_property mt6360_charger_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 };
 
 static const struct power_supply_desc mt6360_charger_desc = {
@@ -3042,6 +3061,7 @@ static char *mt6360_charger_supplied_to[] = {
 	"battery",
 	"mtk-master-charger"
 };
+
 /*otg_vbus*/
 static int mt6360_boost_enable(struct regulator_dev *rdev)
 {
@@ -3226,7 +3246,11 @@ static int typec_attach_thread(void *data)
 
 	pr_info("%s: ++\n", __func__);
 	while (!kthread_should_stop()) {
-		wait_for_completion(&mpci->chrdet_start);
+		wait_event(mpci->attach_wq,
+			   atomic_read(&mpci->chrdet_start) > 0 ||
+							 kthread_should_stop());
+		if (kthread_should_stop())
+			break;
 		mutex_lock(&mpci->attach_lock);
 		attach = mpci->typec_attach;
 		mutex_unlock(&mpci->attach_lock);
@@ -3241,8 +3265,7 @@ static int typec_attach_thread(void *data)
 					__func__, ret);
 		} else
 			mt6360_get_charger_type(mpci, attach);
-		if (kthread_should_stop())
-			break;
+		atomic_set(&mpci->chrdet_start, 0);
 	}
 	return ret;
 }
@@ -3252,7 +3275,8 @@ static void handle_typec_attach(struct mt6360_pmu_chg_info *mpci,
 {
 	mutex_lock(&mpci->attach_lock);
 	mpci->typec_attach = en;
-	complete(&mpci->chrdet_start);
+	atomic_inc(&mpci->chrdet_start);
+	wake_up(&mpci->attach_wq);
 	mutex_unlock(&mpci->attach_lock);
 }
 
@@ -3313,6 +3337,7 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 	struct regulator_config config = { };
 	bool use_dt = pdev->dev.of_node;
 	int i, ret = 0;
+	char *p;
 
 	dev_info(&pdev->dev, "%s\n", __func__);
 	if (use_dt) {
@@ -3355,9 +3380,10 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 	init_completion(&mpci->pumpx_done);
 	atomic_set(&mpci->pe_complete, 0);
 	atomic_set(&mpci->mivr_cnt, 0);
-	init_waitqueue_head(&mpci->waitq);
+	init_waitqueue_head(&mpci->mivr_wq);
 #ifdef CONFIG_TCPC_CLASS
-	init_completion(&mpci->chrdet_start);
+	init_waitqueue_head(&mpci->attach_wq);
+	atomic_set(&mpci->chrdet_start, 0);
 	mutex_init(&mpci->attach_lock);
 #endif
 	platform_set_drvdata(pdev, mpci);
@@ -3400,9 +3426,14 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 	mt6360_pmu_chg_irq_register(pdev);
 	device_init_wakeup(&pdev->dev, true);
 	/* mivr task */
-	mpci->mivr_task = kthread_run(mt6360_chg_mivr_task_threadfn, mpci,
-				      devm_kasprintf(mpci->dev, GFP_KERNEL,
-				      "mivr_thread.%s", dev_name(mpci->dev)));
+	p = devm_kasprintf(mpci->dev, GFP_KERNEL,
+			   "mivr_thread.%s", dev_name(mpci->dev));
+	if (IS_ERR_OR_NULL(p)) {
+		dev_notice(mpci->dev, "devm kasprintf fail\n");
+		ret = -EINVAL;
+		goto err_register_chg_dev;
+	}
+	mpci->mivr_task = kthread_run(mt6360_chg_mivr_task_threadfn, mpci, p);
 	ret = PTR_ERR_OR_ZERO(mpci->mivr_task);
 	if (ret < 0) {
 		dev_err(mpci->dev, "create mivr handling thread fail\n");
@@ -3460,8 +3491,11 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_TCPC_CLASS
 	/*get bc1.2 power supply:chg_psy*/
-	mpci->chg_psy = devm_power_supply_get_by_phandle(&pdev->dev,
-							     "charger");
+	if (mpci->chg_psy == NULL) {
+		mpci->chg_psy = devm_power_supply_get_by_phandle(&pdev->dev,
+								     "charger");
+		dev_err(mpci->dev, "%s devm_power_supply_get_by_phandle %d\n", __func__, sizeof(mpci->chg_psy));
+	}
 	if (IS_ERR(mpci->chg_psy)) {
 		dev_notice(&pdev->dev, "Failed to get charger psy\n");
 		ret = PTR_ERR(mpci->chg_psy);
@@ -3481,6 +3515,7 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 		ret = -ENODEV;
 		goto err_get_tcpcdev;
 	}
+
 	mpci->pd_nb.notifier_call = pd_tcp_notifier_call;
 	ret = register_tcp_dev_notifier(mpci->tcpc_dev, &mpci->pd_nb,
 					TCP_NOTIFY_TYPE_ALL);
@@ -3501,10 +3536,8 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 #ifdef CONFIG_TCPC_CLASS
 err_register_tcp_notifier:
 err_get_tcpcdev:
-	if (mpci->attach_task) {
-		complete(&mpci->chrdet_start);
+	if (mpci->attach_task)
 		kthread_stop(mpci->attach_task);
-	}
 err_attach_task:
 err_psy_get_phandle:
 #endif
@@ -3514,11 +3547,8 @@ err_register_otg:
 err_shipping_mode_attr:
 	device_remove_file(mpci->dev, &dev_attr_shipping_mode);
 err_create_mivr_thread_run:
-	if (mpci->mivr_task) {
-		atomic_inc(&mpci->mivr_cnt);
-		wake_up(&mpci->waitq);
+	if (mpci->mivr_task)
 		kthread_stop(mpci->mivr_task);
-	}
 err_register_chg_dev:
 	charger_device_unregister(mpci->chg_dev);
 err_mutex_init:
@@ -3540,13 +3570,11 @@ static int mt6360_pmu_chg_remove(struct platform_device *pdev)
 	destroy_workqueue(mpci->pe_wq);
 	if (mpci->mivr_task) {
 		atomic_inc(&mpci->mivr_cnt);
-		wake_up(&mpci->waitq);
+		wake_up(&mpci->mivr_wq);
 		kthread_stop(mpci->mivr_task);
 	}
-	if (mpci->attach_task) {
-		complete(&mpci->chrdet_start);
+	if (mpci->attach_task)
 		kthread_stop(mpci->attach_task);
-	}
 	device_remove_file(mpci->dev, &dev_attr_shipping_mode);
 	charger_device_unregister(mpci->chg_dev);
 	mutex_destroy(&mpci->tchg_lock);

@@ -26,9 +26,9 @@
 /* for arm_smccc_smc */
 #include <linux/arm-smccc.h>
 #include <uapi/linux/psci.h>
-
-static char mrdump_lk[12];
-bool mrdump_ddr_reserve_ready;
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/sec_debug.h>
+#endif
 
 static inline unsigned long get_linear_memory_size(void)
 {
@@ -50,6 +50,16 @@ static void aee_exception_reboot(void)
 	arm_smccc_smc(PSCI_1_1_FN_SYSTEM_RESET2,
 		PSCI_1_1_RESET2_TYPE_VENDOR | opt1,
 		opt2, 0, 0, 0, 0, 0, &res);
+}
+
+static void aee_flush_reboot(void)
+{
+#if IS_ENABLED(CONFIG_MEDIATEK_CACHE_API)
+		dis_D_inner_flush_all();
+#else
+		pr_info("dis_D_inner_flush_all invalid");
+#endif
+		aee_exception_reboot();
 }
 
 /*save stack as binary into buf,
@@ -125,73 +135,94 @@ int aee_nested_printf(const char *fmt, ...)
 }
 
 static int num_die;
-static void nested_die_check(int fiq_step)
-{
-	static int last_step;
-
-	if (num_die <= 1) {
-		last_step = fiq_step;
-		aee_rr_rec_fiq_step(fiq_step);
-		aee__flush_dcache_area(&num_die, sizeof(num_die));
-		aee__flush_dcache_area(&last_step, sizeof(last_step));
-	}
-
-	if ((num_die > 1 && fiq_step == last_step) ||
-			fiq_step == AEE_FIQ_STEP_COMMON_DIE_DONE){
-		aee_nested_printf("nd-%d, fs-%d, ls-%d\n",
-				  num_die, fiq_step, last_step);
-#if IS_ENABLED(CONFIG_MEDIATEK_CACHE_API)
-		dis_D_inner_flush_all();
-#else
-		pr_info("dis_D_inner_flush_all invalid");
-#endif
-		aee_exception_reboot();
-	}
-}
-
 int mrdump_common_die(int fiq_step, int reboot_reason, const char *msg,
 		      struct pt_regs *regs)
 {
-	++num_die;
-	nested_die_check(fiq_step);
-	show_kaslr();
-	aee_print_modules();
+	int last_step;
+	int next_step;
 
-	nested_die_check(AEE_FIQ_STEP_COMMON_DIE_SCP);
-	aee_rr_rec_scp();
+	num_die++;
 
-	nested_die_check(AEE_FIQ_STEP_COMMON_DIE_MRDUMP);
-	__mrdump_create_oops_dump(reboot_reason, regs, msg);
+	last_step = aee_rr_curr_fiq_step();
+	if (num_die > 1) {
+		/* NESTED KE */
+		aee_reinit_die_lock();
+	}
+	aee_nested_printf("num_die-%d, fiq_step-%d last_step-%d\n",
+			  num_die, fiq_step, last_step);
+	/* if we were in nested ke now, then the if condition would be false */
+	if (last_step < AEE_FIQ_STEP_COMMON_DIE_START)
+		last_step = AEE_FIQ_STEP_COMMON_DIE_START - 1;
 
-	nested_die_check(AEE_FIQ_STEP_COMMON_DIE_TRACE);
-	switch (reboot_reason) {
-	case AEE_REBOOT_MODE_KERNEL_OOPS:
-		aee_rr_rec_exp_type(AEE_EXP_TYPE_KE);
-		aee_show_regs(regs);
-		dump_stack();
-		break;
-	case AEE_REBOOT_MODE_KERNEL_PANIC:
-		aee_rr_rec_exp_type(AEE_EXP_TYPE_KE);
+	/* skip the works of last_step */
+	next_step = last_step + 1;
+
+	switch (next_step) {
+	case AEE_FIQ_STEP_COMMON_DIE_START:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_START);
+		__mrdump_create_oops_dump(reboot_reason, regs, msg);
+		mdelay(1000);
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_LOCK:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_LOCK);
+		/* release locks after stopping other cpus */
+		aee_reinit_die_lock();
+		aee_zap_locks();
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_KASLR:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_KASLR);
+		show_kaslr();
+		aee_print_modules();
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_SCP:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_SCP);
+		aee_rr_rec_scp();
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_TRACE:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_TRACE);
+		switch (reboot_reason) {
+		case AEE_REBOOT_MODE_KERNEL_OOPS:
+			aee_show_regs(regs);
+			dump_stack();
+			break;
+		case AEE_REBOOT_MODE_KERNEL_PANIC:
 #ifndef CONFIG_DEBUG_BUGVERBOSE
-		dump_stack();
+			dump_stack();
 #endif
-		break;
-	case AEE_REBOOT_MODE_HANG_DETECT:
-		aee_rr_rec_exp_type(AEE_EXP_TYPE_HANG_DETECT);
-		break;
+			break;
+		case AEE_REBOOT_MODE_HANG_DETECT:
+			aee_rr_rec_exp_type(AEE_EXP_TYPE_HANG_DETECT);
+			break;
+		default:
+			/* Don't print anything */
+			break;
+		}
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_REGS:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_REGS);
+		mrdump_mini_ke_cpu_regs(regs);
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_CS:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_CS);
+		console_unlock();
+		/* FALLTHRU */
+	case AEE_FIQ_STEP_COMMON_DIE_DONE:
+		aee_rr_rec_fiq_step(AEE_FIQ_STEP_COMMON_DIE_DONE);
+		/* FALLTHRU */
 	default:
-		/* Don't print anything */
+#ifdef CONFIG_SEC_DEBUG
+		sec_dump_task_info();
+#endif
+#ifdef CONFIG_SEC_DEBUG_AUTO_COMMENT
+		dump_backtrace_auto_comment(regs, NULL);
+#endif
+		aee_nested_printf("num_die-%d, fiq_step-%d, last_step-%d, next_step-%d\n",
+				  num_die, fiq_step,
+				  last_step, next_step);
+		aee_flush_reboot();
 		break;
 	}
 
-	nested_die_check(AEE_FIQ_STEP_COMMON_DIE_REGS);
-	mrdump_mini_ke_cpu_regs(regs);
-
-	nested_die_check(AEE_FIQ_STEP_COMMON_DIE_CS);
-	aee_zap_locks();
-	console_unlock();
-
-	nested_die_check(AEE_FIQ_STEP_COMMON_DIE_DONE);
 	return NOTIFY_DONE;
 }
 EXPORT_SYMBOL(mrdump_common_die);
@@ -201,8 +232,14 @@ int ipanic(struct notifier_block *this, unsigned long event, void *ptr)
 	struct pt_regs saved_regs;
 	int fiq_step;
 
+	aee_rr_rec_exp_type(AEE_EXP_TYPE_KE);
 	fiq_step = AEE_FIQ_STEP_KE_IPANIC_START;
 	crash_setup_regs(&saved_regs, NULL);
+
+#ifdef CONFIG_SEC_DEBUG
+	sec_upload_cause(ptr);
+#endif
+
 	return mrdump_common_die(fiq_step,
 				 AEE_REBOOT_MODE_KERNEL_PANIC,
 				 "Kernel Panic", &saved_regs);
@@ -213,7 +250,13 @@ static int ipanic_die(struct notifier_block *self, unsigned long cmd, void *ptr)
 	struct die_args *dargs = (struct die_args *)ptr;
 	int fiq_step;
 
+	aee_rr_rec_exp_type(AEE_EXP_TYPE_KE);
 	fiq_step = AEE_FIQ_STEP_KE_IPANIC_DIE;
+
+#ifdef CONFIG_SEC_DEBUG
+	sec_upload_cause((void *)(dargs->str));
+#endif
+
 	return mrdump_common_die(fiq_step,
 				 AEE_REBOOT_MODE_KERNEL_OOPS,
 				 "Kernel Oops", dargs->regs);
@@ -227,32 +270,34 @@ static struct notifier_block die_blk = {
 	.notifier_call = ipanic_die,
 };
 
-static __init int mrdump_parse_chosen(void)
+static __init int mrdump_parse_chosen(struct mrdump_params *mparams)
 {
 	struct device_node *node;
 	u32 reg[2];
 	const char *lkver, *ddr_rsv;
 
+	memset(mparams, 0, sizeof(struct mrdump_params));
+
 	node = of_find_node_by_path("/chosen");
 	if (node) {
 		if (of_property_read_u32_array(node, "mrdump,cblock",
 					       reg, ARRAY_SIZE(reg)) == 0) {
-			mrdump_sram_cb.start_addr = reg[0];
-			mrdump_sram_cb.size = reg[1];
+			mparams->cb_addr = reg[0];
+			mparams->cb_size = reg[1];
 			pr_notice("%s: mrdump_cbaddr=%x, mrdump_cbsize=%x\n",
-				  __func__, mrdump_sram_cb.start_addr,
-				  mrdump_sram_cb.size);
+				  __func__, mparams->cb_addr, mparams->cb_size);
 		}
 
 		if (of_property_read_string(node, "mrdump,lk", &lkver) == 0) {
-			strlcpy(mrdump_lk, lkver, sizeof(mrdump_lk));
+			strlcpy(mparams->lk_version, lkver,
+				sizeof(mparams->lk_version));
 			pr_notice("%s: lk version %s\n", __func__, lkver);
 		}
 
 		if (of_property_read_string(node, "mrdump,ddr_rsv",
 					    &ddr_rsv) == 0) {
 			if (strcmp(ddr_rsv, "yes") == 0)
-				mrdump_ddr_reserve_ready = true;
+				mparams->drm_ready = true;
 			pr_notice("%s: ddr reserve mode %s\n", __func__,
 				  ddr_rsv);
 		}
@@ -266,24 +311,25 @@ static __init int mrdump_parse_chosen(void)
 
 static int __init mrdump_panic_init(void)
 {
-	mrdump_parse_chosen();
+	struct mrdump_params mparams = {};
+
+	mrdump_parse_chosen(&mparams);
 #ifdef MODULE
 	mrdump_module_init_mboot_params();
 #endif
-	mrdump_hw_init();
-	mrdump_cblock_init();
+	mrdump_hw_init(mparams.drm_ready);
+	mrdump_cblock_init(mparams.cb_addr, mparams.cb_size);
 	if (mrdump_cblock == NULL) {
-		memset(mrdump_lk, 0, sizeof(mrdump_lk));
 		pr_notice("%s: MT-RAMDUMP no control block\n", __func__);
 		return -EINVAL;
 	}
-	mrdump_mini_init();
+	mrdump_mini_init(&mparams);
 
-	if (strcmp(mrdump_lk, MRDUMP_GO_DUMP) == 0) {
+	if (strcmp(mparams.lk_version, MRDUMP_GO_DUMP) == 0) {
 		mrdump_full_init();
 	} else {
 		pr_notice("%s: Full ramdump disabled, version %s not matched.\n",
-			  __func__, mrdump_lk);
+			  __func__, mparams.lk_version);
 	}
 
 	mrdump_wdt_init();

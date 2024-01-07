@@ -18,6 +18,7 @@
 #include <net/sock.h>
 #include "mtk_battery.h"
 #include "mtk_gauge.h"
+#include <linux/hardware_info.h>	//bug 635700, yaocankun.wt,ADD,20210319, add BMS_GAUGE info in MMI 
 
 
 /* ============================================================ */
@@ -133,6 +134,10 @@
 #define PMIC_AUXADC_NAG_VBAT1_SEL_MASK			0x1
 #define PMIC_AUXADC_NAG_VBAT1_SEL_SHIFT			2
 
+#define PMIC_FG_ZCV_DET_TIME_ADDR                       0xd2e
+#define PMIC_FG_ZCV_DET_TIME_MASK                       0x3F
+#define PMIC_FG_ZCV_DET_TIME_SHIFT                      8
+
 #define PMIC_FG_ZCV_CAR_TH_15_00_ADDR			0xd38
 #define PMIC_FG_ZCV_CAR_TH_15_00_MASK			0xFFFF
 #define PMIC_FG_ZCV_CAR_TH_15_00_SHIFT			0
@@ -199,6 +204,7 @@
 //
 
 #define PMIC_RG_SYSTEM_INFO_CON0_ADDR 0xd9a
+#define PMIC_RG_SYSTEM_INFO_CON1_ADDR 0xd9c
 
 #define UNIT_FGCURRENT			(314331)
 /* mt6357 314.331 uA */
@@ -214,7 +220,7 @@
 /* 3600 * 1000 * 1000 / 157166 , for coulomb interrupt */
 #define DEFAULT_R_FG			(100)
 /* 5mm ohm */
-#define UNIT_FGCAR_ZCV			(85)
+#define UNIT_FGCAR_ZCV			(19646)
 /* CHARGE_LSB = 0.085 uAh */
 
 #define VOLTAGE_FULL_RANGES		1800
@@ -226,6 +232,23 @@
 /* 1000 * 1000 / CHARGE_LSB */
 #define UNIT_FGCAR				(11176)
 /* CHARGE_LSB 0.085 * 2^11 */
+
+
+/************ bat_cali *******************/
+#define BAT_CALI_DEVNAME "MT_pmic_adc_cali"
+#define Get_META_BAT_VOL _IOW('k', 10, int)
+#define Get_META_BAT_SOC _IOW('k', 11, int)
+#define Get_META_BAT_CAR_TUNE_VALUE _IOW('k', 12, int)
+#define Set_META_BAT_CAR_TUNE_VALUE _IOW('k', 13, int)
+#define Set_BAT_DISABLE_NAFG _IOW('k', 14, int)
+#define Set_CARTUNE_TO_KERNEL _IOW('k', 15, int)
+
+
+static struct class *bat_cali_class;
+static int bat_cali_major;
+static dev_t bat_cali_devno;
+static struct cdev *bat_cali_cdev;
+
 
 void __attribute__ ((weak))
 	mtk_battery_netlink_handler(struct sk_buff *skb)
@@ -385,7 +408,7 @@ static int reg_to_current(struct mtk_gauge *gauge,
 u8 get_rtc_spare0_fg_value(struct mtk_gauge *gauge)
 {
 	struct nvmem_cell *cell;
-	u8 *buf;
+	u8 *buf, data;
 
 	cell = nvmem_cell_get(&gauge->pdev->dev, "initialization");
 	if (IS_ERR(cell)) {
@@ -400,7 +423,11 @@ u8 get_rtc_spare0_fg_value(struct mtk_gauge *gauge)
 		return 0;
 	}
 	bm_debug("[%s] val=0x%x, %d\n", __func__, *buf, *buf);
-	return *buf;
+
+	data = *buf;
+	kfree(buf);
+
+	return data;
 }
 
 void set_rtc_spare0_fg_value(struct mtk_gauge *gauge, u8 val)
@@ -424,7 +451,7 @@ void set_rtc_spare0_fg_value(struct mtk_gauge *gauge, u8 val)
 u8 get_rtc_spare_fg_value(struct mtk_gauge *gauge)
 {
 	struct nvmem_cell *cell;
-	u8 *buf;
+	u8 *buf, data;
 
 	cell = nvmem_cell_get(&gauge->pdev->dev, "state-of-charge");
 	if (IS_ERR(cell)) {
@@ -441,8 +468,10 @@ u8 get_rtc_spare_fg_value(struct mtk_gauge *gauge)
 	}
 
 	bm_debug("[%s] val=%d\n", __func__, *buf);
+	data = *buf;
+	kfree(buf);
 
-	return *buf;
+	return data;
 }
 
 void set_rtc_spare_fg_value(struct mtk_gauge *gauge, u8 val)
@@ -469,6 +498,9 @@ void set_rtc_spare_fg_value(struct mtk_gauge *gauge, u8 val)
 static int fgauge_set_info(struct mtk_gauge *gauge,
 	enum gauge_property ginfo, unsigned int value)
 {
+	int value_mask = 0;
+	int sign_bit = 0;
+	int reg_val = 0;
 
 	bm_debug("[%s]info:%d v:%d\n", __func__, ginfo, value);
 
@@ -508,6 +540,40 @@ static int fgauge_set_info(struct mtk_gauge *gauge,
 		PMIC_RG_SYSTEM_INFO_CON0_ADDR,
 		0x007f << 0x9,
 		value << 0x9);
+	} else if (ginfo == GAUGE_PROP_SHUTDOWN_CAR) {
+		if (value == -99999) {
+			/* write invalid */
+			regmap_update_bits(gauge->regmap,
+			PMIC_RG_SYSTEM_INFO_CON1_ADDR,
+			0x01FF << 0x7,
+			0x1FF << 0x7);
+
+			bm_err("[%s]: write invalid value to GAUGE_PROP_SHUTDOWN_CAR\n",
+			__func__);
+			return 0;
+		}
+		if (value < 0)
+			sign_bit = 1;
+
+		value_mask = abs(value);
+		value_mask = value_mask & 0x00ff;
+
+		regmap_update_bits(gauge->regmap,
+			PMIC_RG_SYSTEM_INFO_CON1_ADDR,
+			0x00FF << 0x7,
+			value_mask << 0x7);
+
+		regmap_update_bits(gauge->regmap,
+			PMIC_RG_SYSTEM_INFO_CON1_ADDR,
+			0x0001 << 0xf,
+			sign_bit << 0xf);
+
+		regmap_read(gauge->regmap,
+			PMIC_RG_SYSTEM_INFO_CON1_ADDR, &reg_val);
+
+		bm_err(
+		"[%s]: GAUGE_PROP_SHUTDOWN_CAR:%d,0x%x,sign:%d, 0x%x,0x%x\n",
+		__func__, value, value, sign_bit, value_mask, reg_val);
 	}
 	return 0;
 }
@@ -516,6 +582,8 @@ static int fgauge_get_info(struct mtk_gauge *gauge,
 	enum gauge_property ginfo, int *value)
 {
 	int reg_val = 0;
+	int sign_bit = 0;
+	int tmp_val = 0;
 
 	regmap_read(gauge->regmap, PMIC_RG_SYSTEM_INFO_CON0_ADDR, &reg_val);
 
@@ -539,6 +607,29 @@ static int fgauge_get_info(struct mtk_gauge *gauge,
 	else if (ginfo == GAUGE_PROP_CON0_SOC)
 		*value =
 		(reg_val & (0x007F << 0x9))	>> 0x9;
+	else if (ginfo == GAUGE_PROP_SHUTDOWN_CAR) {
+		regmap_read(gauge->regmap,
+			PMIC_RG_SYSTEM_INFO_CON1_ADDR, &reg_val);
+
+		sign_bit = (reg_val & (0x1 << 0xf))	>> 0xf;
+		tmp_val = (reg_val & (0xff << 0x7))	>> 0x7;
+
+		if (sign_bit == 1 && tmp_val == 0xff) {
+			bm_err("[%s]: GAUGE_PROP_SHUTDOWN_CAR: invalid, sign:%d value:%d,0x%x\n",
+			__func__, sign_bit, tmp_val, reg_val);
+			sign_bit = 0;
+			*value = 0;
+		} else if (sign_bit == 1) {
+			*value = 0 - tmp_val;
+			bm_err("[%s]:GAUGE_PROP_SHUTDOWN_CAR: sign:%d, tmp_val:%d\n",
+			__func__, sign_bit, tmp_val);
+		} else if (sign_bit == 0)
+			*value = tmp_val;
+
+		bm_err("[%s]:GAUGE_PROP_SHUTDOWN_CAR: sign:%d, tmp_val:%d\n",
+		__func__, sign_bit, tmp_val);
+	}
+
 
 	bm_debug("[%s]info:%d v:%d\n", __func__, ginfo, *value);
 
@@ -715,9 +806,12 @@ static void fgauge_set_zcv_intr_internal(
 	int fg_zcv_car_th)
 {
 	int fg_zcv_car_thr_h_reg, fg_zcv_car_thr_l_reg;
-	long long fg_zcv_car_th_reg = fg_zcv_car_th;
+	int slepp_cur_avg = gauge_dev->gm->fg_cust_data.sleep_current_avg;
+	long long fg_zcv_car_th_reg = 0;
 
-	fg_zcv_car_th_reg = (fg_zcv_car_th_reg * 100 * 1000);
+	fg_zcv_car_th = (fg_zcv_det_time + 1) * slepp_cur_avg / 60;
+	fg_zcv_car_th_reg = (long long)fg_zcv_car_th;
+	fg_zcv_car_th_reg = (fg_zcv_car_th_reg * 100 * 3600 * 1000);
 
 #if defined(__LP64__) || defined(_LP64)
 	do_div(fg_zcv_car_th_reg, UNIT_FGCAR_ZCV);
@@ -747,6 +841,12 @@ static void fgauge_set_zcv_intr_internal(
 	fg_zcv_car_thr_h_reg = (fg_zcv_car_th_reg & 0xffff0000) >> 16;
 	fg_zcv_car_thr_l_reg = fg_zcv_car_th_reg & 0x0000ffff;
 
+	regmap_update_bits(gauge_dev->regmap,
+		PMIC_FG_ZCV_DET_TIME_ADDR,
+		PMIC_FG_ZCV_DET_TIME_MASK <<
+		PMIC_FG_ZCV_DET_TIME_SHIFT,
+		fg_zcv_det_time <<
+		PMIC_FG_ZCV_DET_TIME_SHIFT);
 
 	regmap_update_bits(gauge_dev->regmap,
 		PMIC_FG_ZCV_CAR_TH_15_00_ADDR,
@@ -770,14 +870,11 @@ static void fgauge_set_zcv_intr_internal(
 int zcv_intr_threshold_set(struct mtk_gauge *gauge,
 	struct mtk_gauge_sysfs_field_info *attr, int zcv_avg_current)
 {
-	int fg_zcv_det_time;
-	int fg_zcv_car_th = 0;
+	int fg_zcv_det_time = gauge->gm->fg_cust_data.zcv_suspend_time;
+	int fg_zcv_car_th = zcv_avg_current;
 
-	fg_zcv_det_time = gauge->gm->fg_cust_data.zcv_suspend_time;
-	fg_zcv_car_th = (fg_zcv_det_time + 1) * 4 * zcv_avg_current / 60;
-
-	bm_debug("[%s] current:%d, fg_zcv_det_time:%d, fg_zcv_car_th:%d\n",
-		__func__, zcv_avg_current, fg_zcv_det_time, fg_zcv_car_th);
+	bm_debug("[%s] fg_zcv_det_time:%d, fg_zcv_car_th:%d\n",
+		__func__, fg_zcv_det_time, fg_zcv_car_th);
 
 	fgauge_set_zcv_intr_internal(
 		gauge, fg_zcv_det_time, fg_zcv_car_th);
@@ -911,6 +1008,25 @@ int fgauge_get_time(struct mtk_gauge *gauge_dev, unsigned int *ptime)
 	*ptime = ret_time;
 
 	return 0;
+}
+
+
+static unsigned int instant_current_for_car_tune(struct mtk_gauge *gauge)
+{
+	unsigned int reg_value = 0;
+
+	pre_gauge_update(gauge);
+
+	regmap_read(gauge->regmap, PMIC_FG_CURRENT_OUT_ADDR, &reg_value);
+	reg_value = (reg_value &
+		(PMIC_FG_CURRENT_OUT_MASK << PMIC_FG_CURRENT_OUT_SHIFT))
+		>> PMIC_FG_CURRENT_OUT_SHIFT;
+
+	post_gauge_update(gauge);
+
+	bm_err("%s, reg_value=%d\n", __func__, reg_value);
+
+	return reg_value;
 }
 
 static int instant_current(struct mtk_gauge *gauge)
@@ -1226,15 +1342,123 @@ int nafg_en_set(struct mtk_gauge *gauge,
 	return 0;
 }
 
+static int calculate_car_tune(struct mtk_gauge *gauge)
+{
+	int cali_car_tune;
+	long long sum_all = 0;
+	unsigned long long temp_sum = 0;
+	int avg_cnt = 0;
+	int i;
+	unsigned int uvalue32 = 0;
+	signed int dvalue = 0;
+	long long Temp_Value1 = 0;
+	unsigned long long Temp_Value2 = 0;
+	long long current_from_ADC = 0;
+
+	bm_err("%s, meta_current=%d,\n", __func__,
+		gauge->hw_status.meta_current);
+	if (gauge->hw_status.meta_current != 0) {
+		for (i = 0; i < CALI_CAR_TUNE_AVG_NUM; i++) {
+			uvalue32 = instant_current_for_car_tune(gauge);
+			if (uvalue32 != 0) {
+				if (uvalue32 <= 0x8000) {
+					Temp_Value1 = (long long)uvalue32;
+					bm_err("[111]uvalue32 %d Temp_Value1 %lld\n",
+						uvalue32,
+						Temp_Value1);
+				} else if (uvalue32 > 0x8000) {
+
+					Temp_Value1 =
+					(long long) (65535 - uvalue32);
+					bm_err("[222]uvalue32 %d Temp_Value1 %lld\n",
+						uvalue32,
+						Temp_Value1);
+				}
+				sum_all += Temp_Value1;
+				avg_cnt++;
+				/*****************/
+				bm_err("[333]uvalue32 %d Temp_Value1 %lld sum_all %lld\n",
+						uvalue32,
+						Temp_Value1, sum_all);
+				/*****************/
+			}
+			mdelay(30);
+		}
+		/*calculate the real world data    */
+		/*current_from_ADC = sum_all / avg_cnt;*/
+		temp_sum = sum_all;
+		bm_err("[444]sum_all %lld temp_sum %lld avg_cnt %d current_from_ADC %lld\n",
+			sum_all, temp_sum, avg_cnt, current_from_ADC);
+
+		if (avg_cnt != 0)
+			do_div(temp_sum, avg_cnt);
+		current_from_ADC = temp_sum;
+
+		bm_err("[555]sum_all %lld temp_sum %lld avg_cnt %d current_from_ADC %lld\n",
+			sum_all, temp_sum, avg_cnt, current_from_ADC);
+
+		Temp_Value2 = current_from_ADC * UNIT_FGCURRENT;
+
+		bm_err("[555]Temp_Value2 %lld current_from_ADC %lld UNIT_FGCURRENT %d\n",
+			Temp_Value2, current_from_ADC, UNIT_FGCURRENT);
+
+		/* Move 100 from denominator to cali_car_tune's numerator */
+		/*do_div(Temp_Value2, 1000000);*/
+		do_div(Temp_Value2, 10000);
+
+		bm_err("[666]Temp_Value2 %lld current_from_ADC %lld UNIT_FGCURRENT %d\n",
+			Temp_Value2, current_from_ADC, UNIT_FGCURRENT);
+
+		dvalue = (unsigned int) Temp_Value2;
+
+		/* Auto adjust value */
+		if (gauge->hw_status.r_fg_value != 100)
+			dvalue = (dvalue * 100) /
+			gauge->hw_status.r_fg_value;
+
+		bm_err("[666]dvalue %d fg_cust_data.r_fg_value %d\n",
+			dvalue, gauge->hw_status.r_fg_value);
+
+		/* Move 100 from denominator to cali_car_tune's numerator */
+		/*cali_car_tune = meta_input_cali_current * 1000 / dvalue;*/
+
+		if (dvalue != 0) {
+			cali_car_tune =
+				gauge->hw_status.meta_current *
+				1000 * 100 / dvalue;
+
+			bm_err("[777]dvalue %d fg_cust_data.r_fg_value %d cali_car_tune %d\n",
+				dvalue,
+				gauge->hw_status.r_fg_value,
+				cali_car_tune);
+			gauge->hw_status.tmp_car_tune = cali_car_tune;
+
+			bm_err(
+				"[fgauge_meta_cali_car_tune_value][%d] meta:%d, adc:%lld, UNI_FGCUR:%d, r_fg_value:%d\n",
+				cali_car_tune, gauge->hw_status.meta_current,
+				current_from_ADC, UNIT_FGCURRENT,
+				gauge->hw_status.r_fg_value);
+		}
+
+		return 0;
+	}
+
+	return 0;
+}
+
+
 int info_set(struct mtk_gauge *gauge,
 	struct mtk_gauge_sysfs_field_info *attr, int val)
 {
 	int ret = 0;
 
 	if (attr->prop == GAUGE_PROP_CAR_TUNE_VALUE &&
-		(val > 500 && val < 1500))
-		gauge->hw_status.car_tune_value = val;
-	else if (attr->prop == GAUGE_PROP_R_FG_VALUE &&
+		(val > 500 && val < 1500)) {
+		/* send external_current for calculate_car_tune */
+		gauge->hw_status.meta_current = val;
+		calculate_car_tune(gauge);
+
+	} else if (attr->prop == GAUGE_PROP_R_FG_VALUE &&
 		val != 0)
 		gauge->hw_status.r_fg_value = val;
 	else if (attr->prop == GAUGE_PROP_VBAT2_DETECT_TIME)
@@ -1253,14 +1477,19 @@ int info_get(struct mtk_gauge *gauge,
 	int ret = 0;
 
 	if (attr->prop == GAUGE_PROP_CAR_TUNE_VALUE)
-		*val = gauge->hw_status.car_tune_value;
+		*val = gauge->hw_status.tmp_car_tune;
 	else if (attr->prop == GAUGE_PROP_R_FG_VALUE)
 		*val = gauge->hw_status.r_fg_value;
 	else if (attr->prop == GAUGE_PROP_VBAT2_DETECT_TIME)
 		*val = gauge->hw_status.vbat2_det_time;
 	else if (attr->prop == GAUGE_PROP_VBAT2_DETECT_COUNTER)
 		*val = gauge->hw_status.vbat2_det_counter;
-	else
+	else if (attr->prop == GAUGE_PROP_SHUTDOWN_CAR) {
+		fgauge_get_info(gauge, attr->prop, val);
+		ret = *val;
+		bm_err("[%s]GAUGE_PROP_SHUTDOWN_CAR ret:%d v:%d\n",
+			__func__, ret, *val);
+	} else
 		ret = fgauge_get_info(gauge, attr->prop, val);
 
 	return ret;
@@ -2623,6 +2852,253 @@ static int mt6357_gauge_resume(struct platform_device *pdev)
 	return 0;
 }
 
+signed int battery_meter_meta_tool_cali_car_tune(struct mtk_battery *gm,
+	int meta_current)
+{
+	int cali_car_tune = 0;
+
+	if (meta_current == 0)
+		return gm->fg_cust_data.car_tune_value * 10;
+
+	gm->gauge->hw_status.meta_current = meta_current;
+	bm_err("%s meta_current=%d\n", __func__, meta_current);
+
+	calculate_car_tune(gm->gauge);
+	cali_car_tune = gm->gauge->hw_status.tmp_car_tune;
+
+	bm_err("%s cali_car_tune=%d\n", __func__, cali_car_tune);
+
+	return cali_car_tune;		/* 1000 base */
+}
+
+#if IS_ENABLED(CONFIG_COMPAT)
+static long compat_adc_cali_ioctl(
+struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int adc_out_datas[2] = { 1, 1 };
+
+	bm_notice("%s 32bit IOCTL, cmd=0x%08x\n",
+		__func__, cmd);
+	if (!filp->f_op || !filp->f_op->unlocked_ioctl) {
+		bm_err("%s file has no f_op or no f_op->unlocked_ioctl.\n",
+			__func__);
+		return -ENOTTY;
+	}
+
+	if (sizeof(arg) != sizeof(adc_out_datas))
+		return -EFAULT;
+
+	switch (cmd) {
+	case Get_META_BAT_VOL:
+	case Get_META_BAT_SOC:
+	case Get_META_BAT_CAR_TUNE_VALUE:
+	case Set_META_BAT_CAR_TUNE_VALUE:
+	case Set_BAT_DISABLE_NAFG:
+	case Set_CARTUNE_TO_KERNEL: {
+		bm_notice(
+			"%s send to unlocked_ioctl cmd=0x%08x\n",
+			__func__,
+			cmd);
+		return filp->f_op->unlocked_ioctl(
+			filp, cmd,
+			(unsigned long)compat_ptr(arg));
+	}
+		break;
+	default:
+		bm_err("%s unknown IOCTL: 0x%08x, %d\n",
+			__func__, cmd, adc_out_datas[0]);
+		break;
+	}
+
+	return 0;
+}
+#endif
+
+
+
+static long adc_cali_ioctl(
+	struct file *file, unsigned int cmd, unsigned long arg)
+{
+	int *user_data_addr;
+	int ret = 0;
+	int adc_in_data[2] = { 1, 1 };
+	int adc_out_data[2] = { 1, 1 };
+	int temp_car_tune;
+	int isdisNAFG = 0;
+	struct mtk_battery *gm;
+
+	bm_notice("%s enter\n", __func__);
+	gm = get_mtk_battery();
+	mutex_lock(&gm->gauge->fg_mutex);
+	user_data_addr = (int *)arg;
+	ret = copy_from_user(adc_in_data, user_data_addr, sizeof(adc_in_data));
+	if (adc_in_data[1] < 0) {
+		bm_err("%s unknown data: %d\n", __func__, adc_in_data[1]);
+		mutex_unlock(&gm->gauge->fg_mutex);
+		return -EFAULT;
+	}
+
+	switch (cmd) {
+		/* add for meta tool------------------------------- */
+
+	case Get_META_BAT_VOL:
+		adc_out_data[0] =
+			gauge_get_int_property(GAUGE_PROP_BATTERY_VOLTAGE);
+		if (copy_to_user(user_data_addr, adc_out_data,
+			sizeof(adc_out_data))) {
+			mutex_unlock(&gm->gauge->fg_mutex);
+			return -EFAULT;
+		}
+
+		bm_notice("**** unlocked_ioctl :Get_META_BAT_VOL Done!\n");
+		break;
+	case Get_META_BAT_SOC:
+		adc_out_data[0] = gm->ui_soc;
+
+		if (copy_to_user(user_data_addr, adc_out_data,
+			sizeof(adc_out_data))) {
+			mutex_unlock(&gm->gauge->fg_mutex);
+			return -EFAULT;
+		}
+
+		bm_notice("**** unlocked_ioctl :Get_META_BAT_SOC Done!\n");
+		break;
+
+	case Get_META_BAT_CAR_TUNE_VALUE:
+		adc_out_data[0] = gm->fg_cust_data.car_tune_value;
+		bm_err("Get_BAT_CAR_TUNE_VALUE, res=%d\n", adc_out_data[0]);
+
+		if (copy_to_user(user_data_addr, adc_out_data,
+			sizeof(adc_out_data))) {
+			mutex_unlock(&gm->gauge->fg_mutex);
+			return -EFAULT;
+		}
+
+		bm_notice("**** unlocked_ioctl :Get_META_BAT_CAR_TUNE_VALUE Done!\n");
+		break;
+	case Set_META_BAT_CAR_TUNE_VALUE:
+		/* meta tool input: adc_in_data[1] (mA)*/
+		/* Send cali_current to hal to calculate car_tune_value*/
+		temp_car_tune =
+			battery_meter_meta_tool_cali_car_tune(gm, adc_in_data[1]);
+
+		/* return car_tune_value to meta tool in adc_out_data[0] */
+		if (temp_car_tune >= 900 && temp_car_tune <= 1100)
+			gm->fg_cust_data.car_tune_value = temp_car_tune;
+		else
+			bm_err("car_tune_value invalid:%d\n",
+			temp_car_tune);
+
+		adc_out_data[0] = temp_car_tune;
+
+		if (copy_to_user(user_data_addr, adc_out_data,
+			sizeof(adc_out_data))) {
+			mutex_unlock(&gm->gauge->fg_mutex);
+			return -EFAULT;
+		}
+
+		bm_err("**** unlocked_ioctl Set_BAT_CAR_TUNE_VALUE[%d], tmp_car_tune=%d result=%d, ret=%d\n",
+			adc_in_data[1], adc_out_data[0], temp_car_tune,
+			ret);
+
+		break;
+
+	case Set_BAT_DISABLE_NAFG:
+		isdisNAFG = adc_in_data[1];
+
+		if (isdisNAFG == 1) {
+			gm->cmd_disable_nafg = true;
+			wakeup_fg_algo_cmd(
+				gm,
+				FG_INTR_KERNEL_CMD,
+				FG_KERNEL_CMD_DISABLE_NAFG, 1);
+		} else if (isdisNAFG == 0) {
+			gm->cmd_disable_nafg = false;
+			wakeup_fg_algo_cmd(
+				gm,
+				FG_INTR_KERNEL_CMD,
+				FG_KERNEL_CMD_DISABLE_NAFG, 0);
+		}
+		bm_debug("unlocked_ioctl Set_BAT_DISABLE_NAFG,isdisNAFG=%d [%d]\n",
+			isdisNAFG, adc_in_data[1]);
+		break;
+
+		/* add bing meta tool------------------------------- */
+	case Set_CARTUNE_TO_KERNEL:
+		temp_car_tune = adc_in_data[1];
+		if (temp_car_tune > 500 && temp_car_tune < 1500)
+			gm->fg_cust_data.car_tune_value = temp_car_tune;
+
+		bm_err("**** unlocked_ioctl Set_CARTUNE_TO_KERNEL[%d,%d], ret=%d\n",
+			adc_in_data[0], adc_in_data[1], ret);
+		break;
+	default:
+		bm_err("**** unlocked_ioctl unknown IOCTL: 0x%08x\n", cmd);
+		mutex_unlock(&gm->gauge->fg_mutex);
+		return -EINVAL;
+	}
+
+	mutex_unlock(&gm->gauge->fg_mutex);
+
+	return 0;
+}
+
+static int adc_cali_open(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static int adc_cali_release(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+
+
+static const struct file_operations adc_cali_fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = adc_cali_ioctl,
+#if IS_ENABLED(CONFIG_COMPAT)
+	.compat_ioctl = compat_adc_cali_ioctl,
+#endif
+	.open = adc_cali_open,
+	.release = adc_cali_release,
+};
+
+
+static int adc_cali_cdev_init(struct platform_device *pdev)
+{
+	int ret = 0;
+	struct class_device *class_dev = NULL;
+	struct mtk_battery *gm;
+
+	gm = get_mtk_battery();
+
+	if (gm != NULL)
+		mutex_init(&gm->gauge->fg_mutex);
+
+	ret = alloc_chrdev_region(&bat_cali_devno, 0, 1, BAT_CALI_DEVNAME);
+	if (ret)
+		bm_err("Error: Can't Get Major number for adc_cali\n");
+
+	bat_cali_cdev = cdev_alloc();
+	bat_cali_cdev->owner = THIS_MODULE;
+	bat_cali_cdev->ops = &adc_cali_fops;
+	ret = cdev_add(bat_cali_cdev, bat_cali_devno, 1);
+	if (ret)
+		bm_err("adc_cali Error: cdev_add\n");
+
+	bat_cali_major = MAJOR(bat_cali_devno);
+	bat_cali_class = class_create(THIS_MODULE, BAT_CALI_DEVNAME);
+	class_dev = (struct class_device *)device_create(bat_cali_class,
+		NULL,
+		bat_cali_devno,
+		NULL, BAT_CALI_DEVNAME);
+
+	return 0;
+}
+
+
 static void mtk_gauge_netlink_handler(struct sk_buff *skb)
 {
 	mtk_battery_netlink_handler(skb);
@@ -2739,11 +3215,19 @@ static int mt6357_gauge_probe(struct platform_device *pdev)
 	gauge->psy = power_supply_register(&pdev->dev, &gauge->psy_desc,
 			&gauge->psy_cfg);
 	mt6357_sysfs_create_group(gauge);
+	initial_set(gauge, 0, 0);
 	bat_create_netlink(pdev);
 	battery_init(pdev);
+	adc_cali_cdev_init(pdev);
 
 	bm_err("%s: done\n", __func__);
-
+	//bug 635700, yaocankun.wt,ADD,20210319, add BMS_GAUGE info in MMI
+#ifdef CONFIG_WT_PROJECT_S96717RA1
+	hardwareinfo_set_prop(HARDWARE_BMS_GAUGE_INFO, "MT6357");
+#else
+//P210708-01489, lvyuanchuan.wt,ADD,20210713, add BMS_GAUGE info in MMI for N6R
+	hardwareinfo_set_prop(HARDWARE_BMS_GAUGE_INFO, "MT6357");
+#endif
 	return 0;
 }
 
@@ -2770,7 +3254,7 @@ static struct platform_driver mt6357_gauge_driver = {
 	.suspend = mt6357_gauge_suspend,
 	.resume = mt6357_gauge_resume,
 	.driver = {
-		.name = "mt6357_gauge",
+		.name = "mt6357-gauge",
 		.of_match_table = mt6357_gauge_of_match,
 		},
 };

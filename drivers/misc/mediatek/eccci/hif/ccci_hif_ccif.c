@@ -27,6 +27,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/clk.h> /* for clk_prepare/un* */
+#include <linux/syscore_ops.h>
 
 #include "ccci_core.h"
 #include "ccci_modem.h"
@@ -34,6 +35,7 @@
 #include "ccci_platform.h"
 #include "ccci_hif_ccif.h"
 #include "md_sys1_platform.h"
+#include "ccci_debug_info.h"
 
 #ifdef CONFIG_OF
 #include <linux/of.h>
@@ -866,6 +868,15 @@ static int ccif_rx_collect(struct md_ccif_queue *queue, int budget,
 			goto OUT;
 		}
 		ccci_h = (struct ccci_header *)skb->data;
+
+#ifdef CONFIG_MTK_SRIL_SUPPORT
+		if (ccci_h->channel == CCCI_RIL_IPC0_RX
+			|| ccci_h->channel == CCCI_RIL_IPC1_RX) {
+			print_hex_dump(KERN_INFO, "1. mif: RX: ",
+					DUMP_PREFIX_NONE, 32, 1, skb->data, 32, 0);
+		}
+#endif
+
 		if (md_ctrl->md_id == MD_SYS3) {
 			/* md3(c2k) logical channel number is not
 			 * the same as other modems,
@@ -1245,13 +1256,17 @@ static irqreturn_t md_ccif_isr(int irq, void *data)
 {
 	struct md_ccif_ctrl *md_ctrl = (struct md_ccif_ctrl *)data;
 	unsigned int ch_id, i;
+	u64 cur_time = local_clock();
+
 	/*disable_irq_nosync(md_ctrl->ccif_irq_id); */
 	/*must ack first, otherwise IRQ will rush in */
 	ch_id = ccif_read32(md_ctrl->ccif_ap_base, APCCIF_RCHNUM);
 
 	for (i = 0; i < CCIF_CH_NUM; i++)
-		if (ch_id & 0x1 << i)
+		if (ch_id & 0x1 << i) {
 			set_bit(i, &md_ctrl->channel_id);
+			ccif_debug_save_irq(i, cur_time);
+		}
 	/* for 91/92, HIF CCIF is for C2K, only 16 CH;
 	 * for 93, only lower 16 CH is for data
 	 */
@@ -1288,6 +1303,8 @@ static inline void md_ccif_queue_struct_init(struct md_ccif_queue *queue,
 	queue->wakeup = 0;
 	queue->resume_cnt = 0;
 	queue->budget = RX_BUGDET;
+
+	ccif_debug_info_init();
 }
 
 static int md_ccif_op_write_room(unsigned char hif_id, unsigned char qno)
@@ -1401,6 +1418,13 @@ static int md_ccif_op_send_skb(unsigned char hif_id, int qno,
 			CCCI_ERROR_LOG(md_ctrl->md_id, TAG,
 				"TX:ERR rbf write: ret(%d)!=req(%d)\n",
 				ret, skb->len);
+#ifdef CONFIG_MTK_SRIL_SUPPORT
+		if (ccci_h->channel == CCCI_RIL_IPC0_TX
+			|| ccci_h->channel == CCCI_RIL_IPC1_TX) {
+			print_hex_dump(KERN_INFO, "1. mif: TX: ",
+					DUMP_PREFIX_NONE, 32, 1, skb->data, 32, 0);
+		}
+#endif
 		ccci_md_add_log_history(&md_ctrl->traffic_info, OUT,
 			(int)queue->index, ccci_h, 0);
 		/* free request */
@@ -1410,6 +1434,13 @@ static int md_ccif_op_send_skb(unsigned char hif_id, int qno,
 		md_ccif_send(hif_id, queue->ccif_ch);
 		spin_unlock_irqrestore(&queue->tx_lock, flags);
 	} else {
+#ifdef CONFIG_MTK_SRIL_SUPPORT
+		if (ccci_h->channel == CCCI_RIL_IPC0_TX
+			|| ccci_h->channel == CCCI_RIL_IPC1_TX) {
+			print_hex_dump(KERN_INFO, "2. mif: TX: ",
+					DUMP_PREFIX_NONE, 32, 1, skb->data, 32, 0);
+		}
+#endif
 		md_flow_ctrl = ccif_is_md_flow_ctrl_supported(md_ctrl);
 		if (likely(md_cap & MODEM_CAP_TXBUSY_STOP)
 			&& md_flow_ctrl > 0) {
@@ -2043,6 +2074,32 @@ static int ccif_hif_hw_init(struct device *dev, struct md_ccif_ctrl *md_ctrl)
 
 }
 
+static int ccci_ccif_syssuspend(void)
+{
+
+	return 0;
+}
+
+static void ccci_ccif_sysresume(void)
+{
+	struct ccci_modem *md;
+	struct md_sys1_info *md_info;
+
+	md = ccci_md_get_modem_by_id(0);
+	if (md) {
+		md_info = (struct md_sys1_info *)md->private_data;
+		ccif_write32(md_info->ap_ccif_base, APCCIF_CON, 0x01);
+
+	} else
+		CCCI_ERROR_LOG(-1, TAG,
+			"[%s] error: get modem1 failed.", __func__);
+}
+
+static struct syscore_ops ccci_ccif_sysops = {
+	.suspend = ccci_ccif_syssuspend,
+	.resume = ccci_ccif_sysresume,
+};
+
 int ccci_ccif_hif_init(struct platform_device *pdev,
 	unsigned char hif_id, unsigned char md_id)
 {
@@ -2097,6 +2154,9 @@ int ccci_ccif_hif_init(struct platform_device *pdev,
 	}
 
 	ccci_hif_register(md_ctrl->hif_id, (void *)md_ctrl, &ccci_hif_ccif_ops);
+
+	/* register SYS CORE suspend resume call back */
+	register_syscore_ops(&ccci_ccif_sysops);
 
 	return 0;
 }

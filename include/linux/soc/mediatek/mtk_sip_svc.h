@@ -27,6 +27,8 @@
 /* Debug feature and ATF related */
 #define MTK_SIP_KERNEL_WDT \
 	MTK_SIP_SMC_CMD(0x200)
+#define MTK_SIP_KERNEL_GIC_DUMP \
+	MTK_SIP_SMC_CMD(0x201)
 #define MTK_SIP_KERNEL_TIME_SYNC \
 	MTK_SIP_SMC_CMD(0x202)
 #define MTK_SIP_KERNEL_ATF_DEBUG \
@@ -158,6 +160,10 @@
 /* AUDIO related SMC call */
 #define MTK_SIP_AUDIO_CONTROL \
 	MTK_SIP_SMC_CMD(0x517)
+
+/* TMEM */
+#define MTK_SIP_KERNEL_TMEM_CONTROL \
+	MTK_SIP_SMC_CMD(0x524)
 
 /* APU VCORE CG control related SMC call */
 #define MTK_SIP_KERNEL_APU_VCORE_CG_CTL \

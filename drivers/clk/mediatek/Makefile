@@ -62,12 +62,15 @@ ifeq ($(CONFIG_DEBUG_FS), y)
 obj-$(CONFIG_COMMON_CLK_MEDIATEK) += clkdbg.o
 obj-$(CONFIG_COMMON_CLK_MT2712) += clkdbg-mt2712.o
 obj-$(CONFIG_COMMON_CLK_MT6761) += clkdbg_mt6761.o
+ifeq ($(CONFIG_COMMON_CLK_MT6761), y)
+obj-$(CONFIG_COMMON_CLK_MT6761) += clkchk-mt6761.o
+endif
 obj-$(CONFIG_COMMON_CLK_MT6765) += clkdbg_mt6765.o clkchk-mt6765.o
 obj-$(CONFIG_COMMON_CLK_MT6779) += clkdbg-mt6779.o clkchk-mt6779.o
 endif
 obj-$(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING) += fhctl.o
 fhctl-y += clk-fhctl.o
-fhctl-$(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING_DEBUG) += clk-fhctl-debug.o
+fhctl-$(CONFIG_DEBUG_FS) += clk-fhctl-debug.o
 ifneq ($(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING_SUBSYS),y)
 fhctl-y += clk-fhctl-ap.o
 else

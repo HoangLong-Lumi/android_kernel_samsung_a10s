@@ -82,9 +82,13 @@ static uint8_t *core_write_cpu_note(int cpu, struct elf32_phdr *nhdr,
 	struct memelfnote notes;
 	struct elf32_prstatus prstatus;
 	char cpustr[16];
+	int n;
 
 	memset(&prstatus, 0, sizeof(struct elf32_prstatus));
-	snprintf(cpustr, sizeof(cpustr), "CPU%d", cpu);
+	n = snprintf(cpustr, sizeof(cpustr), "CPU%d", cpu);
+	if (n < 0)
+		pr_info("%s, snprintf return error", __func__);
+
 	/* set up the process status */
 	notes.name = cpustr;
 	notes.type = NT_PRSTATUS;
@@ -234,6 +238,9 @@ static inline u32 dump_adsp_shared_memory(void *buf, size_t size, int id)
 	void *mem_addr = adsp_get_reserve_mem_virt(id);
 	size_t mem_size = adsp_get_reserve_mem_size(id);
 
+	if (!mem_addr)
+		return 0;
+
 	return copy_from_buffer(buf, size, mem_addr, mem_size, 0, -1);
 }
 
@@ -242,6 +249,9 @@ static inline u32 copy_from_adsp_shared_memory(void *buf, u32 offset,
 {
 	void *mem_addr = adsp_get_reserve_mem_virt(id);
 	size_t mem_size = adsp_get_reserve_mem_size(id);
+
+	if (!mem_addr)
+		return 0;
 
 	return copy_from_buffer(buf, -1, mem_addr, mem_size, offset, size);
 }
@@ -377,7 +387,7 @@ void adsp_aed(enum adsp_excep_id type, enum adsp_core_id id)
 	/* adsp aed api, only detail information available*/
 	aed_common_exception_api("adsp", NULL, 0, NULL, 0, detail, db_opt);
 
-	pr_debug("[ADSP] adsp exception dump is done\n");
+	pr_info("[ADSP] adsp exception dump is done\n");
 	mutex_unlock(&adsp_excep_mutex);
 }
 

@@ -1189,6 +1189,7 @@ static char *musb_dbuffer_avail_function_list[] = {
 
 	"adb",
 	"mtp",
+	"ptp",
 	"Mass Storage Function",
 	"rndis",
 	"acm",
@@ -2529,16 +2530,16 @@ int musb_gadget_setup(struct musb *musb)
 	musb->is_active = 0;
 	musb_platform_try_idle(musb, 0);
 
-//#ifdef CONFIG_OF
-#if defined(CONFIG_R_PORTING)
-	/*gadget device dma ops is null,so add musb controller dma ops*/
-	/* to gadget device dma ops, otherwise will go do dma dump ops.*/
-	if (musb->controller->archdata.dma_ops) {
+	/* Fix: gadget device dma ops is null,so add musb controller dma ops */
+	/* to gadget device dma ops, otherwise will go do dma dump ops. */
+#ifdef CONFIG_XEN
+	if (musb->controller->archdata.dev_dma_ops) {
 		DBG(0, "musb controller dma ops is non-null\n");
-		musb->g.dev.archdata.dma_ops =
-			musb->controller->archdata.dma_ops;
+		musb->g.dev.archdata.dev_dma_ops =
+			musb->controller->archdata.dev_dma_ops;
 	}
 #endif
+
 	status = usb_add_gadget_udc(musb->controller, &musb->g);
 	if (status)
 		goto err;
@@ -3086,14 +3087,17 @@ void musb_g_reset(struct musb *musb)
 	/* active wake lock */
 	if (!musb->usb_lock->active)
 		__pm_stay_awake(musb->usb_lock);
+        #ifndef FPGA_PLATFORM
+         musb_platform_reset(musb);
+         musb_generic_disable(musb);
+        #endif
 
-	musb_platform_reset(musb);
-	musb_generic_disable(musb);
-
+	/* re-init interrupt setting */
+	musb->intrrxe = 0;
+	musb_writew(mbase, MUSB_INTRRXE, musb->intrrxe);
 	musb->intrtxe = 0x1;
-	musb_writew(mbase, MUSB_INTRTXE,
-					musb->intrtxe);
-		/* enable ep0 interrupt */
+	musb_writew(mbase, MUSB_INTRTXE, musb->intrtxe);
+
 	musb_writeb(mbase, MUSB_INTRUSBE,
 					MUSB_INTR_SUSPEND
 					| MUSB_INTR_RESUME

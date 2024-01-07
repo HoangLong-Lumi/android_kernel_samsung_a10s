@@ -1231,8 +1231,9 @@ static void ndisc_router_discovery(struct sk_buff *skb)
 		in6_dev->if_flags |= IF_RA_RCVD;
 	}
 
-	if (sysctl_optr == MTK_IPV6_VZW_ALL ||
-	    sysctl_optr == MTK_IPV6_EX_RS_INTERVAL) {
+	if ((sysctl_optr == MTK_IPV6_VZW_ALL ||
+	     sysctl_optr == MTK_IPV6_EX_RS_INTERVAL) &&
+	    (strncmp(in6_dev->dev->name, "ccmni", 2) == 0)) {
 		/*add for VzW feature : remove IF_RS_VZW_SENT flag*/
 		if (in6_dev->if_flags & IF_RS_VZW_SENT)
 			in6_dev->if_flags &= ~IF_RS_VZW_SENT;
@@ -1330,24 +1331,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
 		rt->fib6_flags = (rt->fib6_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
 	}
 
-	if (rt) {
-		/*MTK changes
-		 *if route lifetime carried by RA msg equals to 0xFFFF,
-		 *considering it as infinite route lifetime and cleaning
-		 *route expires. Otherwise, setting route expires according
-		 *to the lifetime value.
-		 */
-		if (lifetime == 0xffff) {
-			fib6_clean_expires(rt);
-			pr_info("[mtk_net]RA: %s, rt %p, clean route expires since lifetime %d infinite\n",
-				__func__, rt, lifetime);
-		} else {
-			fib6_set_expires(rt, jiffies + (HZ * lifetime));
-			pr_info("[mtk_net]RA: %s, rt %p, set route expires since lifetime %d finite\n",
-				__func__, rt, lifetime);
-		}
-	}
-
+	if (rt)
+		fib6_set_expires(rt, jiffies + (HZ * lifetime));
 	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
 	    ra_msg->icmph.icmp6_hop_limit) {
 		if (in6_dev->cnf.accept_ra_min_hop_limit <= ra_msg->icmph.icmp6_hop_limit) {

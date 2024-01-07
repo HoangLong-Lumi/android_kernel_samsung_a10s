@@ -478,6 +478,12 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->dsi.lcm_esd_check_table[0].count = 1;
 	params->dsi.lcm_esd_check_table[0].para_list[0] = 0x9d;
 
+	/* mipi hopping part sample */
+	params->dsi.dynamic_switch_mipi = 1;
+	//params->dsi.vertical_backporch_dyn = 12;
+	//PLL_CLOCK * 2, clock no change
+	params->dsi.data_rate_dyn = 980;
+
 	/* for ARR 2.0 */
 	params->max_refresh_rate = 60;
 	params->min_refresh_rate = 45;

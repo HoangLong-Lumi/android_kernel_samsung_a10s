@@ -17,6 +17,11 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/sizes.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
+#include <linux/dma-mapping.h>
+#include <linux/dma-direct.h>
+#include <linux/kallsyms.h>
 
 #include "private/tmem_error.h"
 #include "private/tmem_utils.h"
@@ -25,6 +30,8 @@
 
 #include "private/ut_cmd.h"
 #include "tee_impl/tee_invoke.h"
+
+#include "memory_ssmr.h"
 
 static int tmem_open(struct inode *inode, struct file *file)
 {
@@ -264,9 +271,11 @@ MODULE_PARM_DESC(ut_saturation_stress_pmem_min_chunk_size,
 		 "set pmem minimal chunk size for saturation stress tests");
 #endif
 
-static int __init trusted_mem_init(void)
+static int trusted_mem_init(struct platform_device *pdev)
 {
 	pr_info("%s:%d\n", __func__, __LINE__);
+
+	ssmr_probe(pdev);
 
 	trusted_mem_subsys_init();
 
@@ -283,14 +292,22 @@ static int __init trusted_mem_init(void)
 	mtee_mchunks_init();
 #endif
 
+#if IS_ENABLED(CONFIG_MTK_GZ_KREE)
+	tmem_mpu_vio_init();
+#endif
+
 	trusted_mem_create_proc_entry();
 
 	pr_info("%s:%d (end)\n", __func__, __LINE__);
 	return TMEM_OK;
 }
 
-static void __exit trusted_mem_exit(void)
+static int trusted_mem_exit(struct platform_device *pdev)
 {
+#if IS_ENABLED(CONFIG_MTK_GZ_KREE)
+	tmem_mpu_vio_exit();
+#endif
+
 #ifdef MTEE_DEVICES_SUPPORT
 	mtee_mchunks_exit();
 #endif
@@ -305,11 +322,25 @@ static void __exit trusted_mem_exit(void)
 #endif
 
 	trusted_mem_subsys_exit();
+
+	return 0;
 }
 
-late_initcall(trusted_mem_init);
-module_exit(trusted_mem_exit);
+static const struct of_device_id tm_of_match_table[] = {
+	{ .compatible = "mediatek,trusted_mem"},
+	{},
+};
+
+static struct platform_driver trusted_mem_driver = {
+	.probe = trusted_mem_init,
+	.remove = trusted_mem_exit,
+	.driver = {
+		.name = "trusted_mem",
+		.of_match_table = tm_of_match_table,
+	},
+};
+module_platform_driver(trusted_mem_driver);
 
 MODULE_AUTHOR("MediaTek Inc.");
-MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MediaTek Trusted Memory Driver");
+MODULE_LICENSE("GPL v2");

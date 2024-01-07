@@ -139,8 +139,7 @@ static inline bool is_busy(int ret)
 
 static inline bool is_nop_call(u32 smc_nr)
 {
-	return (smc_nr == SMC_SC_GZ_NOP ||
-		smc_nr == MTEE_SMCNR_TID(SMCF_SC_NOP, 0) ||
+	return (smc_nr == MTEE_SMCNR_TID(SMCF_SC_NOP, 0) ||
 		smc_nr == MTEE_SMCNR_TID(SMCF_SC_NOP, 1));
 }
 
@@ -201,8 +200,7 @@ static ulong trusty_std_call_helper(struct device *dev, ulong smcnr,
 			 * 0 means NOP, 1 means STDCALL
 			 * a1 = cpu core (get after local IRQ is disabled)
 			 */
-			if (smcnr == SMC_SC_GZ_RESTART_LAST ||
-			    smcnr == MTEE_SMCNR_TID(SMCF_SC_RESTART_LAST, 0) ||
+			if (smcnr == MTEE_SMCNR_TID(SMCF_SC_RESTART_LAST, 0) ||
 			    smcnr == MTEE_SMCNR_TID(SMCF_SC_RESTART_LAST, 1))
 				a1 = smp_processor_id();
 		}
@@ -312,7 +310,7 @@ s32 trusty_std_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
 	WARN_ON(SMC_IS_FASTCALL(smcnr));
 	WARN_ON(SMC_IS_SMC64(smcnr));
 
-	if (smcnr != SMC_SC_GZ_NOP && smcnr != MTEE_SMCNR_TID(SMCF_SC_NOP, 0) &&
+	if (smcnr != MTEE_SMCNR_TID(SMCF_SC_NOP, 0) &&
 	    smcnr != MTEE_SMCNR_TID(SMCF_SC_NOP, 1)) {
 		//mutex_lock(&multi_lock);
 		mutex_lock(&s->smc_lock);
@@ -334,7 +332,7 @@ s32 trusty_std_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
 
 	WARN_ONCE(ret == SM_ERR_PANIC, "trusty crashed");
 
-	if (smcnr == SMC_SC_GZ_NOP || smcnr == MTEE_SMCNR_TID(SMCF_SC_NOP, 0) ||
+	if (smcnr == MTEE_SMCNR_TID(SMCF_SC_NOP, 0) ||
 	    smcnr == MTEE_SMCNR_TID(SMCF_SC_NOP, 1))
 		complete(&s->cpu_idle_completion);
 	else {
@@ -370,6 +368,66 @@ int trusty_call_notifier_unregister(struct device *dev,
 	return atomic_notifier_chain_unregister(&s->notifier, n);
 }
 EXPORT_SYMBOL(trusty_call_notifier_unregister);
+
+int trusty_callback_notifier_register(struct device *dev,
+				struct notifier_block *n)
+{
+	struct trusty_state *s;
+
+	if (IS_ERR_OR_NULL(dev))
+		return -EINVAL;
+
+	s = platform_get_drvdata(to_platform_device(dev));
+	return blocking_notifier_chain_register(&s->callback, n);
+}
+EXPORT_SYMBOL(trusty_callback_notifier_register);
+
+int trusty_callback_notifier_unregister(struct device *dev,
+				struct notifier_block *n)
+{
+	struct trusty_state *s;
+
+	if (IS_ERR_OR_NULL(dev))
+		return -EINVAL;
+
+	s = platform_get_drvdata(to_platform_device(dev));
+	return blocking_notifier_chain_unregister(&s->callback, n);
+}
+EXPORT_SYMBOL(trusty_callback_notifier_unregister);
+
+int trusty_adjust_task_attr(struct device *dev,
+				struct trusty_task_attr *manual_task_attr)
+{
+	struct trusty_state *s;
+
+	if (IS_ERR_OR_NULL(dev))
+		return -EINVAL;
+
+	s = platform_get_drvdata(to_platform_device(dev));
+
+	blocking_notifier_call_chain(&s->callback,
+			TRUSTY_CALLBACK_VIRTIO_WQ_ATTR, manual_task_attr);
+
+	return 0;
+}
+EXPORT_SYMBOL(trusty_adjust_task_attr);
+
+int trusty_dump_systrace(struct device *dev, void *data)
+{
+#if ENABLE_GZ_TRACE_DUMP
+	struct trusty_state *s;
+
+	if (IS_ERR_OR_NULL(dev))
+		return -EINVAL;
+
+	s = platform_get_drvdata(to_platform_device(dev));
+
+	blocking_notifier_call_chain(&s->callback,
+			TRUSTY_CALLBACK_SYSTRACE, data);
+#endif
+	return 0;
+}
+EXPORT_SYMBOL(trusty_dump_systrace);
 
 static int trusty_remove_child(struct device *dev, void *data)
 {
@@ -651,7 +709,7 @@ EXPORT_SYMBOL(trusty_dequeue_nop);
 
 static int trusty_probe(struct platform_device *pdev)
 {
-	int ret, tee_id;
+	int ret, tee_id = 0;
 	unsigned int cpu;
 	work_func_t work_func;
 	struct trusty_state *s;
@@ -689,6 +747,7 @@ static int trusty_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&s->nop_queue);
 	mutex_init(&s->smc_lock);
 	ATOMIC_INIT_NOTIFIER_HEAD(&s->notifier);
+	BLOCKING_INIT_NOTIFIER_HEAD(&s->callback);
 	init_completion(&s->cpu_idle_completion);
 	platform_set_drvdata(pdev, s);
 

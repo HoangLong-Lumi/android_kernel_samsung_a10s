@@ -112,30 +112,6 @@ static int mmc_crypto_cfg_entry_write_key(union swcqhci_crypto_cfg_entry *cfg,
 	return -EINVAL;
 }
 
-static void program_key(struct mmc_host *host,
-			const union swcqhci_crypto_cfg_entry *cfg,
-			int slot)
-{
-	u32 aes_key[8] = {0}, aes_tkey[8] = {0};
-	size_t key_size_bytes;
-	enum swcqhci_crypto_key_size size;
-
-	/* if cqe enabled, skip program key here,
-	 * we will do it in low level driver
-	 */
-	if ((host->caps2 & (MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD)))
-		return;
-
-	/* limit half_len as sizeof(u32)*8, avoid local buffer overflow */
-	size = host->crypto_cap_array[slot].key_size;
-	key_size_bytes = get_keysize_bytes(size);
-
-	/* split key into key & tkey */
-	memcpy(aes_key, &cfg->crypto_key[0], key_size_bytes/2);
-	memcpy(aes_tkey,
-		&cfg->crypto_key[MMC_CRYPTO_KEY_MAX_SIZE/2], key_size_bytes/2);
-}
-
 static int mmc_crypto_keyslot_program(struct keyslot_manager *ksm,
 			const struct blk_crypto_key *key,
 			unsigned int slot)
@@ -167,7 +143,14 @@ static int mmc_crypto_keyslot_program(struct keyslot_manager *ksm,
 		return -EINVAL;
 
 	memset(&cfg, 0, sizeof(cfg));
+
 	cfg.data_unit_size = data_unit_mask;
+#ifdef CONFIG_MMC_CRYPTO_LEGACY
+	/* used fsrypt v2 in OTA fscrypt v1 environment */
+	if (key->hie_duint_size != 4096)
+		cfg.data_unit_size = 1;
+#endif
+
 	cfg.crypto_cap_idx = cap_idx;
 	cfg.config_enable |= MMC_CRYPTO_CONFIGURATION_ENABLE;
 
@@ -175,12 +158,6 @@ static int mmc_crypto_keyslot_program(struct keyslot_manager *ksm,
 				host->crypto_cap_array[cap_idx]);
 	if (err)
 		return err;
-
-	/* if cqe enabled, skip program key here,
-	 * we will do it in low level driver
-	 */
-	if (!(host->caps2 & (MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD)))
-		program_key(host, &cfg, slot);
 
 	memcpy(&cfg_arr[slot], &cfg, sizeof(cfg));
 	memzero_explicit(&cfg, sizeof(cfg));
@@ -221,7 +198,10 @@ static int mmc_init_crypto_spec(struct mmc_host *host,
 {
 	int err;
 	u32 count;
-	unsigned int crypto_modes_supported[BLK_ENCRYPTION_MODE_MAX];
+	unsigned int crypto_modes_supported[BLK_ENCRYPTION_MODE_MAX] = {0};
+
+	if (host->ksm)
+		return 0;
 
 	if (!(host->caps2 & MMC_CAP2_CRYPTO)) {
 		err = -ENODEV;
@@ -266,7 +246,7 @@ static int mmc_init_crypto_spec(struct mmc_host *host,
 		goto out_free_cfg_mem;
 	}
 	/* Peng: temp */
-	crypto_modes_supported[1] = 4096;
+	crypto_modes_supported[1] = 0x1200;
 
 	host->ksm = keyslot_manager_create(host->parent,
 		NUM_KEYSLOTS(host), ksm_ops,
@@ -306,7 +286,16 @@ static int mmc_prepare_mqr_crypto_spec(struct mmc_host *host,
 		return -EINVAL;
 
 	mqr->brq.mrq.crypto_key_slot = bc->bc_keyslot;
-	mqr->brq.mrq.data_unit_num = bc->bc_dun[0];
+	/*
+	 * OTA with ext4 (dun is 512 bytes) used LBA,
+	 * with F2FS (dun is 512 bytes), the dun[0] had
+	 * multiplied by 8.
+	 */
+	if (bc->hie_ext4 == true)
+		mqr->brq.mrq.data_unit_num =
+			(blk_rq_pos(request) & 0xFFFFFFFF);
+	else
+		mqr->brq.mrq.data_unit_num = bc->bc_dun[0];
 	mqr->brq.mrq.crypto_key = bc->bc_key;
 	return 0;
 }

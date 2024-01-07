@@ -10,7 +10,7 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 
-#include <mt-plat/mtk_secure_api.h>
+#include <mtk_idle_smc.h>
 #include <mt-plat/sync_write.h>
 #include <mt-plat/aee.h>
 
@@ -52,10 +52,6 @@
 #define PCM_WDT_TIMEOUT		(30 * 32768)	/* 30s */
 /* PCM_TIMER_VAL */
 #define PCM_TIMER_MAX		(0xffffffff - PCM_WDT_TIMEOUT)
-
-/* SMC call's marco */
-#define SMC_CALL(_name, _arg0, _arg1, _arg2) \
-	mt_secure_call(MTK_SIP_KERNEL_SPM_##_name, _arg0, _arg1, _arg2, 0)
 
 extern spinlock_t __spm_lock;
 

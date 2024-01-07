@@ -51,7 +51,7 @@ static u64 ssmr_upper_limit = UPPER_LIMIT64;
 static struct device *ssmr_dev;
 
 static const struct of_device_id ssmr_of_match_table[] = {
-	{ .compatible = "mediatek,memory_ssmr"},
+	{ .compatible = "mediatek,trusted_mem"},
 	{},
 };
 
@@ -73,7 +73,8 @@ static struct SSMR_Feature _ssmr_feats[__MAX_NR_SSMR_FEATURES] = {
 		.cmd_offline = "svp=off",
 #if IS_ENABLED(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT) ||\
 	IS_ENABLED(CONFIG_TRUSTONIC_TEE_SUPPORT) ||\
-	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT)
+	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT) || \
+	IS_ENABLED(CONFIG_TEEGRIS_TEE_SUPPORT)
 		.enable = "on",
 #else
 		.enable = "off",
@@ -189,7 +190,8 @@ struct SSMR_HEAP_INFO _ssmr_heap_info[__MAX_NR_SSMR_FEATURES];
 
 #if IS_ENABLED(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT) ||\
 	IS_ENABLED(CONFIG_TRUSTONIC_TEE_SUPPORT) ||\
-	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT)
+	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT) || \
+	IS_ENABLED(CONFIG_TEEGRIS_TEE_SUPPORT)
 static int __init dedicate_svp_memory(struct reserved_mem *rmem)
 {
 	struct SSMR_Feature *feature;
@@ -703,7 +705,7 @@ static int memory_ssmr_sysfs_init(void)
 }
 #endif /* end of CONFIG_SYSFS */
 
-static int ssmr_probe(struct platform_device *pdev)
+int ssmr_probe(struct platform_device *pdev)
 {
 	int i;
 

@@ -377,7 +377,7 @@ static ssize_t scp_mobile_log_show(struct device *kobj,
 
 	stat = (scp_A_logger_inited && SCP_A_log_ctl->enable) ? 1 : 0;
 
-	return sprintf(buf, "[SCP A] mobile log is %s\n",
+	return scnprintf(buf, PAGE_SIZE, "[SCP A] mobile log is %s\n",
 			(stat == 0x1) ? "enabled" : "disabled");
 }
 
@@ -408,7 +408,7 @@ static ssize_t scp_A_logger_wakeup_AP_show(struct device *kobj,
 
 	stat = (scp_A_logger_inited && scp_A_logger_wakeup_ap) ? 1 : 0;
 
-	return sprintf(buf, "[SCP A] logger wakeup AP is %s\n",
+	return scnprintf(buf, PAGE_SIZE, "[SCP A] logger wakeup AP is %s\n",
 			(stat == 0x1) ? "enabled" : "disabled");
 }
 
@@ -437,7 +437,7 @@ static ssize_t scp_A_get_last_log_show(struct device *kobj,
 		struct device_attribute *attr, char *buf)
 {
 	scp_A_get_last_log(last_log_info.scp_log_buf_maxlen);
-	return sprintf(buf, "scp_log_buf_maxlen=%u, log=%s\n",
+	return scnprintf(buf, PAGE_SIZE, "scp_log_buf_maxlen=%u, log=%s\n",
 			last_log_info.scp_log_buf_maxlen,
 			scp_A_last_log ? scp_A_last_log : "");
 }

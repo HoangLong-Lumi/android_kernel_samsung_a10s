@@ -29,6 +29,10 @@
 #include "mtk_musb.h"
 #endif
 
+#ifdef CONFIG_USB_NOTIFY_PROC_LOG
+#include <linux/usblog_proc_notify.h>
+#endif
+
 static void (*usb_hal_dpidle_request_fptr)(int);
 void usb_hal_dpidle_request(int mode)
 {
@@ -63,6 +67,8 @@ bool musb_host_db_workaround1;
 bool musb_host_db_workaround2;
 long musb_host_db_delay_ns;
 long musb_host_db_workaround_cnt;
+int mtk_host_audio_free_ep_udelay = 1000;
+
 module_param(musb_fake_CDP, int, 0644);
 module_param(kernel_init_done, int, 0644);
 module_param(musb_host_dynamic_fifo, int, 0644);
@@ -72,6 +78,8 @@ module_param(musb_host_db_workaround1, bool, 0644);
 module_param(musb_host_db_workaround2, bool, 0644);
 module_param(musb_host_db_delay_ns, long, 0644);
 module_param(musb_host_db_workaround_cnt, long, 0644);
+module_param(mtk_host_audio_free_ep_udelay, int, 0644);
+
 #ifdef CONFIG_MTK_MUSB_QMU_SUPPORT
 int mtk_host_qmu_concurrent = 1;
 /* | (PIPE_BULK + 1) | (PIPE_INTERRUPT+ 1) */
@@ -152,9 +160,8 @@ module_param_named(dbg_uart, musb_uart_debug, uint, 0644);
 
 #define MUSB_DRIVER_NAME "musb-hdrc"
 const char musb_driver_name[] = MUSB_DRIVER_NAME;
-#if defined(CONFIG_R_PORTING)
 static DEFINE_IDA(musb_ida);
-#endif
+
 MODULE_DESCRIPTION(DRIVER_INFO);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_LICENSE("GPL");
@@ -261,36 +268,26 @@ static inline struct musb *dev_to_musb(struct device *dev)
 }
 
 /*-------------------------------------------------------------------------*/
-#if defined(CONFIG_R_PORTING)
 int musb_get_id(struct device *dev, gfp_t gfp_mask)
 {
 	int ret;
-	int id;
 
-	ret = ida_pre_get(&musb_ida, gfp_mask);
-	if (!ret) {
-		dev_notice(dev, "failed to reserve resource for id\n");
-		return -ENOMEM;
-	}
-
-	ret = ida_get_new(&musb_ida, &id);
+	ret = ida_alloc(&musb_ida, gfp_mask);
 	if (ret < 0) {
 		dev_notice(dev, "failed to allocate a new id\n");
 		return ret;
 	}
 
-	return id;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(musb_get_id);
 
 void musb_put_id(struct device *dev, int id)
 {
-
 	dev_dbg(dev, "removing id %d\n", id);
-	ida_remove(&musb_ida, id);
+	ida_free(&musb_ida, id);
 }
 EXPORT_SYMBOL_GPL(musb_put_id);
-#endif
 
 #ifdef NEVER				/* #ifndef CONFIG_BLACKFIN */
 static int musb_ulpi_read(struct usb_phy *phy, u32 offset)
@@ -524,10 +521,9 @@ void musb_load_testpacket(struct musb *musb)
 /*
  * Handles OTG hnp timeouts, such as b_ase0_brst
  */
-#if defined(CONFIG_R_PORTING)
-static void musb_otg_timer_func(unsigned long data)
+static void musb_otg_timer_func(struct timer_list *t)
 {
-	struct musb *musb = (struct musb *)data;
+	struct musb	*musb = from_timer(musb, t, otg_timer);
 	unsigned long flags;
 	bool vbus_off = false;
 
@@ -566,7 +562,6 @@ static void musb_otg_timer_func(unsigned long data)
 	if (vbus_off)
 		musb_platform_set_vbus(musb, 0);
 }
-#endif
 
 #if defined(CONFIG_USBIF_COMPLIANCE)
 void musb_set_host_request_flag(struct musb *musb,
@@ -1127,6 +1122,11 @@ b_host:
 		DBG(0, "%s:%d MUSB_INTR_RESET (%s)\n",
 			__func__, __LINE__,
 			otg_state_string(musb->xceiv->otg->state));
+
+#ifdef CONFIG_USB_NOTIFY_PROC_LOG
+			store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=RESET", NULL);
+#endif
 		if ((devctl & MUSB_DEVCTL_HM) != 0) {
 			/*
 			 * Looks like non-HS BABBLE can be ignored, but
@@ -1261,14 +1261,13 @@ void musb_start(struct musb *musb)
 			musb->is_host, musb->is_active);
 
 	musb_platform_enable(musb);
+	musb_platform_reset(musb);
 	musb_generic_disable(musb);
 
 	intrusbe = musb_readb(regs, MUSB_INTRUSBE);
 	if (musb->is_host) {
 		musb->intrtxe = 0xffff;
-		musb_writew(regs, MUSB_INTRTXE, musb->intrtxe);
 		musb->intrrxe = 0xfffe;
-		musb_writew(regs, MUSB_INTRRXE, musb->intrrxe);
 		intrusbe = 0xf7;
 
 		while (!musb_platform_get_vbus_status(musb)) {
@@ -1280,6 +1279,9 @@ void musb_start(struct musb *musb)
 		}
 
 	} else if (!musb->is_host) {
+		/* enable ep0 interrupt */
+		musb->intrtxe = 0x1;
+		musb->intrrxe = 0;
 		/* device mode enable reset interrupt */
 		intrusbe |= MUSB_INTR_RESET;
 #if defined(CONFIG_USBIF_COMPLIANCE)
@@ -1288,6 +1290,8 @@ void musb_start(struct musb *musb)
 #endif
 	}
 
+	musb_writew(regs, MUSB_INTRTXE, musb->intrtxe);
+	musb_writew(regs, MUSB_INTRRXE, musb->intrrxe);
 	musb_writeb(regs, MUSB_INTRUSBE, intrusbe);
 
 	/* In U2 host mode, USB bus will issue
@@ -1848,6 +1852,7 @@ static int musb_core_init(u16 musb_type, struct musb *musb)
 	void __iomem *mbase = musb->mregs;
 	int status = 0;
 	int i;
+	int ret;
 
 	/* log core options (read using indexed model) */
 	reg = musb_read_configdata(mbase);
@@ -1894,9 +1899,13 @@ static int musb_core_init(u16 musb_type, struct musb *musb)
 
 	/* log release info */
 	musb->hwvers = musb_read_hwvers(mbase);
-	snprintf(aRevision, 32, "%d.%d%s", MUSB_HWVERS_MAJOR(musb->hwvers),
+	ret = snprintf(aRevision, 32, "%d.%d%s", MUSB_HWVERS_MAJOR(musb->hwvers),
 		 MUSB_HWVERS_MINOR(musb->hwvers),
 		 (musb->hwvers & MUSB_HWVERS_RC) ? "RC" : "");
+
+	if (ret < 0)
+		return -EINVAL;
+
 	pr_debug("%s: %sHDRC RTL version %s %s\n"
 		, musb_driver_name, type, aRevision, aDate);
 
@@ -2046,7 +2055,7 @@ irqreturn_t musb_interrupt(struct musb *musb)
 				static DEFINE_RATELIMIT_STATE(rlmt, HZ, 2);
 				static int skip_cnt;
 
-				if (host_tx_refcnt_dec(ep_num) < 0) {
+				if (musb_host_db_enable && host_tx_refcnt_dec(ep_num) < 0) {
 					int ref_cnt;
 
 					musb_host_db_workaround_cnt++;
@@ -2479,9 +2488,7 @@ static int musb_init_controller
 			? MUSB_CONTROLLER_MHDRC : MUSB_CONTROLLER_HDRC, musb);
 	if (status < 0)
 		goto fail3;
-#if defined(CONFIG_R_PORTING)
-	setup_timer(&musb->otg_timer, musb_otg_timer_func, (unsigned long)musb);
-#endif
+	timer_setup(&musb->otg_timer, musb_otg_timer_func, 0);
 #if defined(CONFIG_USBIF_COMPLIANCE)
 	vbus_polling_tsk =
 		kthread_create(polling_vbus_value, NULL, "polling_vbus_thread");
@@ -2503,7 +2510,7 @@ static int musb_init_controller
 
 	/* attach to the IRQ */
 	if (request_irq(musb->nIrq, musb->isr
-			, IRQF_TRIGGER_LOW, dev_name(dev), musb)) {
+			, IRQF_TRIGGER_NONE, dev_name(dev), musb)) {
 		DBG(0, "request_irq %d failed!\n", musb->nIrq);
 		status = -ENODEV;
 		goto fail3;

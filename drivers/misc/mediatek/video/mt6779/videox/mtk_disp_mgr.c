@@ -1084,16 +1084,16 @@ long __frame_config(unsigned long arg)
 		goto error1;
 	}
 
+	if (disp_validate_ioctl_params(cfg)) {
+		ret = -EINVAL;
+		goto error1;
+	}
+
 	cfg->setter = SESSION_USER_HWC;
 
 	input_config_preprocess(cfg);
 	if (cfg->output_en)
 		output_config_preprocess(cfg);
-
-	if (disp_validate_ioctl_params(cfg)) {
-		ret = -EINVAL;
-		goto error2;
-	}
 
 	switch (DISP_SESSION_TYPE(cfg->session_id)) {
 	case DISP_SESSION_PRIMARY:
@@ -1111,7 +1111,6 @@ long __frame_config(unsigned long arg)
 		break;
 	}
 
-error2:
 	disp_input_free_dirty_roi(cfg);
 error1:
 	kfree(cfg);
@@ -1584,6 +1583,8 @@ const char *_session_ioctl_str(unsigned int cmd)
 		return "DISP_IOCTL_CCORR_EVENTCTL";
 	case DISP_IOCTL_CCORR_GET_IRQ:
 		return "DISP_IOCTL_CCORR_GET_IRQ";
+	case DISP_IOCTL_SUPPORT_COLOR_TRANSFORM:
+		return "DISP_IOCTL_SUPPORT_COLOR_TRANSFORM";
 	case DISP_IOCTL_SET_PQPARAM:
 		return "DISP_IOCTL_SET_PQPARAM";
 	case DISP_IOCTL_GET_PQPARAM:
@@ -1669,6 +1670,7 @@ long mtk_disp_mgr_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case DISP_IOCTL_SET_CCORR:
 	case DISP_IOCTL_CCORR_EVENTCTL:
 	case DISP_IOCTL_CCORR_GET_IRQ:
+	case DISP_IOCTL_SUPPORT_COLOR_TRANSFORM:
 	case DISP_IOCTL_SET_PQPARAM:
 	case DISP_IOCTL_GET_PQPARAM:
 	case DISP_IOCTL_SET_PQINDEX:
@@ -1799,6 +1801,7 @@ static long mtk_disp_mgr_compat_ioctl(struct file *file, unsigned int cmd,
 	case DISP_IOCTL_SET_CCORR:
 	case DISP_IOCTL_CCORR_EVENTCTL:
 	case DISP_IOCTL_CCORR_GET_IRQ:
+	case DISP_IOCTL_SUPPORT_COLOR_TRANSFORM:
 	case DISP_IOCTL_SET_PQPARAM:
 	case DISP_IOCTL_GET_PQPARAM:
 	case DISP_IOCTL_SET_PQINDEX:

@@ -598,7 +598,6 @@ PVRSRV_ERROR RGXCreateCCB(PVRSRV_RGXDEV_INFO	*psDevInfo,
 								PVRSRV_MEMALLOCFLAG_KERNEL_CPU_MAPPABLE;
 
 	uiClientCCBCtlMemAllocFlags = PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(PMMETA_PROTECT) |
-								PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(FIRMWARE_CACHED) |
 								PVRSRV_MEMALLOCFLAG_GPU_READABLE |
 								PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE |
 								PVRSRV_MEMALLOCFLAG_UNCACHED |
@@ -2021,6 +2020,11 @@ PVRSRV_ERROR RGXCmdHelperAcquireCmdCCB(IMG_UINT32 ui32CmdCount,
 		if (psCmdHelperData->ui32UnfencedUpdateCmdSize != 0)
 		{
 			RGXFWIF_CCB_CMD_HEADER * const psHeader = IMG_OFFSET_ADDR(psCmdHelperData->pui8ServerUpdateStart, psCmdHelperData->ui32UpdateCmdSize);
+			/* header should not be zero but check for code analysis */
+			if (unlikely(psHeader == NULL))
+			{
+				return PVRSRV_ERROR_MEMORY_ACCESS;
+			}
 			/* set up the header for unfenced updates */
 			PVR_ASSERT(psHeader); /* Could be zero if ui32UpdateCmdSize is 0 which is never expected */
 			psHeader->eCmdType = RGXFWIF_CCB_CMD_TYPE_UNFENCED_UPDATE;
@@ -2651,6 +2655,7 @@ void DumpStalledContextInfo(PVRSRV_RGXDEV_INFO *psDevInfo)
 					RGXFWIF_KCCB_CMD sSignalFencesCmd;
 
 					sSignalFencesCmd.eCmdType = RGXFWIF_KCCB_CMD_FORCE_UPDATE;
+					sSignalFencesCmd.ui32KCCBFlags = 0;
 					sSignalFencesCmd.uCmdData.sForceUpdateData.psContext = FWCommonContextGetFWAddress(psStalledClientCCB->psServerCommonContext);
 					sSignalFencesCmd.uCmdData.sForceUpdateData.ui32CCBFenceOffset = ui32SampledDepOffset;
 

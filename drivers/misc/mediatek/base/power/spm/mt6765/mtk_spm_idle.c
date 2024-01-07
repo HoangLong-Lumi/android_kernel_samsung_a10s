@@ -9,7 +9,10 @@
 #include <linux/spinlock.h>
 
 #include <mt-plat/mtk_ccci_common.h> /* exec_ccci_kern_func_by_md_id */
+
+#if defined(CONFIG_MTK_WATCHDOG) && defined(CONFIG_MTK_WD_KICKER)
 #include <mt-plat/mtk_wd_api.h> /* ap wdt related definitons */
+#endif
 
 #include <trace/events/mtk_idle_event.h>
 
@@ -162,6 +165,11 @@ int mtk_idle_trigger_wfi(int idle_type, unsigned int idle_flag, int cpu)
 
 	pwrctrl = get_pwrctrl(idle_type);
 
+	if (!pwrctrl) {
+		pr_info("Error: pwrctrl is NULL!\n");
+		return 0;
+	}
+
 	print_ftrace_tag(idle_type, cpu, 1);
 
 	if (is_cpu_pdn(pwrctrl->pcm_flags))
@@ -249,6 +257,11 @@ void mtk_idle_pre_process_by_chip(
 	unsigned int pcm_flags;
 	unsigned int pcm_flags1;
 
+	if (!pwrctrl) {
+		pr_info("Error: pwrctrl is NULL!\n");
+		return;
+	}
+
 	/* get pcm_flags and update if needed */
 	pcm_flags = idle_pcm_flags[idle_type];
 	pcm_flags1 = idle_pcm_flags1[idle_type];
@@ -279,6 +292,8 @@ void mtk_idle_pre_process_by_chip(
 			aee_sram_printk("FAILED TO GET WD API\n");
 			pr_info("[IDLE] FAILED TO GET WD API\n");
 		}
+#else
+		SMC_CALL(ARGS, SPM_ARGS_PCM_WDT, 1, 30);
 #endif
 	}
 
@@ -326,6 +341,14 @@ void mtk_idle_post_process_by_chip(
 	struct wake_status wakesta;
 	unsigned int wr = WR_NONE;
 
+	if (!pwrctrl) {
+		pr_info("Error: pwrctrl is NULL!\n");
+		return;
+	}
+
+	if (unlikely(idle_type < 0 || idle_type >= NR_IDLE_TYPES))
+		return;
+
 	/* get spm info */
 	__spm_get_wakeup_status(&wakesta);
 
@@ -363,6 +386,8 @@ void mtk_idle_post_process_by_chip(
 			wd_api->wd_spmwdt_mode_config(WD_REQ_DIS
 							, WD_REQ_RST_MODE);
 		}
+#else
+		SMC_CALL(ARGS, SPM_ARGS_PCM_WDT, 0, 0);
 #endif
 
 		/* restore timer_val and wake_src */
@@ -463,7 +488,8 @@ static unsigned int mtk_sodi_output_log(
 	}
 
 	if (print_log) {
-		pr_info("Power/swap op_cond = 0x%x\n", op_cond);
+		printk_deferred("[name:spm&]Power/swap op_cond = 0x%x\n"
+			, op_cond);
 		wr = __spm_output_wake_reason(
 			wakesta, false, mtk_idle_name(idle_type));
 		if (idle_flag & MTK_IDLE_LOG_RESOURCE_USAGE)

@@ -7,6 +7,7 @@
 #include <linux/clk-provider.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #include "clk-mtk.h"
 #include "clk-gate.h"
@@ -77,15 +78,19 @@ static int clk_mt6765_audio_probe(struct platform_device *pdev)
 	int r;
 
 	clk_data = mtk_alloc_clk_data(CLK_AUDIO_NR_CLK);
+	if (!clk_data)
+		return -ENOMEM;
 
 	mtk_clk_register_gates(node, audio_clks,
 			       ARRAY_SIZE(audio_clks), clk_data);
 
 	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
 
-	if (r)
+	if (r) {
+		kfree(clk_data);
 		pr_err("%s(): could not register clock provider: %d\n",
-		       __func__, r);
+				__func__, r);
+	}
 
 	return r;
 }

@@ -26,7 +26,6 @@
 
 module_param(mtk_v4l2_dbg_level, int, S_IRUGO | S_IWUSR);
 module_param(mtk_vcodec_dbg, bool, S_IRUGO | S_IWUSR);
-struct mtk_vcodec_dev *venc_dev;
 
 static int fops_vcodec_open(struct file *file)
 {
@@ -107,6 +106,7 @@ static int fops_vcodec_open(struct file *file)
 				   ctx->id, ctx, ctx->m2m_ctx);
 
 	list_add(&ctx->list, &dev->ctx_list);
+	dev->enc_cnt++;
 
 	mutex_unlock(&dev->dev_mutex);
 	mtk_v4l2_debug(0, "%s encoder [%d]", dev_name(&dev->plat_dev->dev),
@@ -148,6 +148,8 @@ static int fops_vcodec_release(struct file *file)
 	list_del_init(&ctx->list);
 	kfree(ctx->enc_flush_buf);
 	kfree(ctx);
+	if (dev->enc_cnt > 0)
+		dev->enc_cnt--;
 	mutex_unlock(&dev->dev_mutex);
 	return 0;
 }
@@ -170,14 +172,15 @@ static const struct v4l2_file_operations mtk_vcodec_fops = {
 static int mtk_vcodec_enc_suspend(struct device *pDev)
 {
 	int val, i;
+	struct mtk_vcodec_dev *dev = dev_get_drvdata(pDev);
 
 	for (i = 0; i < MTK_VENC_HW_NUM; i++) {
-		val = down_trylock(&venc_dev->enc_sem[i]);
+		val = down_trylock(&dev->enc_sem[i]);
 	if (val == 1) {
 		mtk_v4l2_debug(0, "fail due to videocodec activity");
 		return -EBUSY;
 	}
-		up(&venc_dev->enc_sem[i]);
+		up(&dev->enc_sem[i]);
 	}
 
 	mtk_v4l2_debug(1, "done");
@@ -196,13 +199,15 @@ static int mtk_vcodec_enc_suspend_notifier(struct notifier_block *nb,
 	int wait_cnt = 0;
 	int val = 0;
 	int i;
+	struct mtk_vcodec_dev *dev =
+		container_of(nb, struct mtk_vcodec_dev, pm_notifier);
 
 	mtk_v4l2_debug(1, "action = %ld", action);
 	switch (action) {
 	case PM_SUSPEND_PREPARE:
-		venc_dev->is_codec_suspending = 1;
+		dev->is_codec_suspending = 1;
 		for (i = 0; i < MTK_VENC_HW_NUM; i++) {
-			val = down_trylock(&venc_dev->enc_sem[i]);
+			val = down_trylock(&dev->enc_sem[i]);
 			while (val == 1) {
 				usleep_range(10000, 20000);
 				wait_cnt++;
@@ -213,13 +218,13 @@ static int mtk_vcodec_enc_suspend_notifier(struct notifier_block *nb,
 					mtk_v4l2_err("waiting fail");
 					return NOTIFY_DONE;
 				}
-				val = down_trylock(&venc_dev->enc_sem[i]);
+				val = down_trylock(&dev->enc_sem[i]);
 			}
-			up(&venc_dev->enc_sem[i]);
+			up(&dev->enc_sem[i]);
 		}
 		return NOTIFY_OK;
 	case PM_POST_SUSPEND:
-		venc_dev->is_codec_suspending = 0;
+		dev->is_codec_suspending = 0;
 		return NOTIFY_OK;
 	default:
 		return NOTIFY_DONE;
@@ -372,9 +377,10 @@ static int mtk_vcodec_enc_probe(struct platform_device *pdev)
 
 	mtk_prepare_venc_dvfs();
 	mtk_prepare_venc_emi_bw();
-	pm_notifier(mtk_vcodec_enc_suspend_notifier, 0);
+	dev->pm_notifier.notifier_call = mtk_vcodec_enc_suspend_notifier;
+	register_pm_notifier(&dev->pm_notifier);
 	dev->is_codec_suspending = 0;
-	venc_dev = dev;
+	dev->enc_cnt = 0;
 
 	return 0;
 

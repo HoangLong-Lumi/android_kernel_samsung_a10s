@@ -16,6 +16,10 @@
 #if defined(MTK_LCM_DEVICE_TREE_SUPPORT)
 #include <linux/of.h>
 #endif
+#include "linux/hardware_info.h"
+extern char Lcm_name[HARDWARE_MAX_ITEM_LONGTH];
+unsigned int g_default_panel_backlight_off = 0;
+
 
 /* This macro and arrya is designed for multiple LCM support */
 /* for multiple LCM, we should assign I/F Port id in lcm driver, */
@@ -1031,12 +1035,16 @@ struct disp_lcm_handle *disp_lcm_probe(char *plcm_name,
 	bool isLCMDtFound = false;
 #endif
 
+
 	struct LCM_DRIVER *lcm_drv = NULL;
 	struct LCM_PARAMS *lcm_param = NULL;
 	struct disp_lcm_handle *plcm = NULL;
 
 	DISPFUNC();
 	DISPCHECK("plcm_name=%s is_lcm_inited %d\n", plcm_name, is_lcm_inited);
+	if (is_lcm_inited == 1){
+		strncpy(Lcm_name,plcm_name,strlen(plcm_name)+1);
+	}
 
 #if defined(MTK_LCM_DEVICE_TREE_SUPPORT)
 	if (check_lcm_node_from_DT() == 0) {
@@ -1313,15 +1321,27 @@ int disp_lcm_init(struct disp_lcm_handle *plcm, int force)
 	return 0;
 }
 
+struct LCM_BACKLIGHT_CUSTOM lcm_backlight_cust[6];
+unsigned int lcm_backlight_cust_count;
+
 struct LCM_PARAMS *disp_lcm_get_params(struct disp_lcm_handle *plcm)
 {
+    int i = 0;
 	/* DISPFUNC(); */
 
-	if (_is_lcm_inited(plcm))
+	if (_is_lcm_inited(plcm)) {
+		g_default_panel_backlight_off = plcm->params->default_panel_bl_off;
+		for(i=0; i<6; i++)
+			lcm_backlight_cust[i] = plcm->params->backlight_cust[i];
+		lcm_backlight_cust_count = plcm->params->backlight_cust_count;
+
 		return plcm->params;
-	else
+	}else
 		return NULL;
 }
+
+EXPORT_SYMBOL(lcm_backlight_cust);
+EXPORT_SYMBOL(lcm_backlight_cust_count);
 
 enum LCM_INTERFACE_ID disp_lcm_get_interface_id(struct disp_lcm_handle *plcm)
 {
@@ -1466,6 +1486,26 @@ int disp_lcm_aod(struct disp_lcm_handle *plcm, int enter)
 	return -1;
 }
 
+int disp_lcm_disable(struct disp_lcm_handle *plcm)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+
+	DISPMSG("%s+\n", __func__);
+	if (_is_lcm_inited(plcm)) {
+		lcm_drv = plcm->drv;
+		if (lcm_drv->disable) {
+			lcm_drv->disable();
+		} else {
+			DISPERR("FATAL ERROR, lcm_drv->disable is null\n");
+			return -1;
+		}
+		return 0;
+	}
+
+	DISPERR("lcm_drv is null\n");
+	return -1;
+}
+
 int disp_lcm_is_support_adjust_fps(struct disp_lcm_handle *plcm)
 {
 	struct LCM_DRIVER *lcm_drv = NULL;
@@ -1496,8 +1536,55 @@ int disp_lcm_adjust_fps(void *cmdq, struct disp_lcm_handle *plcm, int fps)
 	return -1;
 }
 
+#ifndef CONFIG_WT_PROJECT_S96717RA1
+unsigned int g_last_level;
+int get_lcm_backlight_level(void){
+
+	return g_last_level;
+
+}
+#endif
+
+#define BRIGHTNESS_MAX 255
+#define BL_MAX 4095
+#define BL_MIN 160
+
 int disp_lcm_set_backlight(struct disp_lcm_handle *plcm,
 	void *handle, int level)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+	int bl_value;
+	DISPFUNC();
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("lcm_drv is null\n");
+		return -1;
+	}
+	lcm_drv = plcm->drv;
+#ifndef CONFIG_WT_PROJECT_S96717RA1
+	g_last_level=level;
+	if (lcm_drv->set_backlight_cmdq) {
+		bl_value=(BL_MAX*level)/BRIGHTNESS_MAX;
+		if(bl_value < BL_MIN)
+			bl_value = BL_MIN;
+		DISPERR("disp_lcm_set_backlight:level:%d====>bl_value:%d\n",level,bl_value);
+		lcm_drv->set_backlight_cmdq(handle, bl_value);
+	}
+#else
+	if (lcm_drv->set_backlight_cmdq) {
+		lcm_drv->set_backlight_cmdq(handle, level);
+		DISPERR("disp_lcm_set_backlight:level:%d\n", level);
+	}
+#endif
+	else {
+		DISPERR("FATAL ERROR, lcm_drv->set_backlight is null\n");
+		return -1;
+	}
+
+	return 0;
+}
+//+Bug 623261, chensibo.wt, ADD, 20210201, add CABC funciton
+int disp_lcm_set_cabc(struct disp_lcm_handle *plcm,
+	void *handle, int enable)
 {
 	struct LCM_DRIVER *lcm_drv = NULL;
 
@@ -1508,15 +1595,38 @@ int disp_lcm_set_backlight(struct disp_lcm_handle *plcm,
 	}
 
 	lcm_drv = plcm->drv;
-	if (lcm_drv->set_backlight_cmdq) {
-		lcm_drv->set_backlight_cmdq(handle, level);
+	if (lcm_drv->set_cabc_cmdq) {
+		lcm_drv->set_cabc_cmdq(handle, enable);
 	} else {
-		DISPERR("FATAL ERROR, lcm_drv->set_backlight is null\n");
+		DISPERR("FATAL ERROR, lcm_drv->set_cabc_cmdq is null\n");
 		return -1;
 	}
 
 	return 0;
 }
+
+int disp_lcm_get_cabc(struct disp_lcm_handle *plcm, int *status)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+
+	DISPFUNC();
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("lcm_drv is null\n");
+		return -1;
+	}
+
+	lcm_drv = plcm->drv;
+	if (lcm_drv->get_cabc_status) {
+		lcm_drv->get_cabc_status(status);
+	} else {
+		DISPERR("FATAL ERROR, lcm_drv->get_cabc_status is null\n");
+		return -1;
+	}
+
+	return 0;
+}
+//-Bug 623261, chensibo.wt, ADD, 20210201, add CABC funciton
+
 
 int disp_lcm_ioctl(struct disp_lcm_handle *plcm, enum LCM_IOCTL ioctl,
 	unsigned int arg)
@@ -1676,3 +1786,202 @@ int disp_lcm_validate_roi(struct disp_lcm_handle *plcm,
 	DISPERR("validate roi lcm_drv is null\n");
 	return -1;
 }
+
+/*for ARR*/
+int disp_lcm_is_arr_support(struct disp_lcm_handle *plcm)
+{
+	struct LCM_PARAMS *lcm_param = NULL;
+	unsigned int dfps_levels = 0;
+	struct dynamic_fps_info *p_fps_table = NULL;
+	unsigned int i = 0;
+
+	/*DISPFUNC();*/
+	if (_is_lcm_inited(plcm))
+		lcm_param = plcm->params;
+	else
+		return 0;
+
+	if (lcm_param->type != LCM_TYPE_DSI ||
+		lcm_param->dsi.mode == CMD_MODE) {
+		return 0;
+	}
+
+	dfps_levels = lcm_param->dsi.dynamic_fps_levels;
+	if (dfps_levels == 0 ||
+		dfps_levels > DYNAMIC_FPS_LEVELS) {
+		return 0;
+	}
+	p_fps_table = lcm_param->dsi.dynamic_fps_table;
+	if (p_fps_table == NULL)
+		return 0;
+	for (i = 0; i < dfps_levels; i++) {
+		if (p_fps_table[i].fps == 0 ||
+			p_fps_table[i].vfp == 0) {
+			return 0;
+		}
+	}
+	DISPDBG("%s,lcm support arr\n", __func__);
+	return 1;
+}
+
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+
+/*-------------------DynFPS start-----------------------------*/
+int disp_lcm_is_dynfps_support(struct disp_lcm_handle *plcm)
+{
+	struct LCM_PARAMS *lcm_param = NULL;
+	unsigned int dfps_enable = 0;
+	unsigned int dfps_num = 0;
+
+	/*DISPFUNC();*/
+	if (_is_lcm_inited(plcm))
+		lcm_param = plcm->params;
+	else
+		return 0;
+
+	if (lcm_param->type != LCM_TYPE_DSI ||
+		lcm_param->dsi.mode == CMD_MODE) {
+		return 0;
+	}
+
+	dfps_enable = lcm_param->dsi.dfps_enable;
+	dfps_num = lcm_param->dsi.dfps_num;
+	if (dfps_enable == 0 ||
+		dfps_num < 2) {
+		return 0;
+	}
+	/*DynFPS:ToDo*/
+	DISPDBG("%s,lcm support arr\n", __func__);
+	return 1;
+}
+
+unsigned int disp_lcm_dynfps_get_def_fps(
+		struct disp_lcm_handle *plcm)
+{
+	struct LCM_PARAMS *lcm_param = NULL;
+
+	/*DISPFUNC();*/
+	if (_is_lcm_inited(plcm))
+		lcm_param = plcm->params;
+	else
+		return 0;
+
+	return lcm_param->dsi.dfps_default_fps;
+}
+unsigned int disp_lcm_dynfps_get_dfps_num(
+		struct disp_lcm_handle *plcm)
+{
+	struct LCM_PARAMS *lcm_param = NULL;
+
+	/*DISPFUNC();*/
+	if (_is_lcm_inited(plcm))
+		lcm_param = plcm->params;
+	else
+		return 0;
+
+	return lcm_param->dsi.dfps_num;
+}
+unsigned int disp_lcm_dynfps_get_def_timing_fps(
+	struct disp_lcm_handle *plcm)
+{
+	struct LCM_PARAMS *lcm_param = NULL;
+
+	/*DISPFUNC();*/
+	if (_is_lcm_inited(plcm))
+		lcm_param = plcm->params;
+	else
+		return 0;
+
+	return lcm_param->dsi.dfps_def_vact_tim_fps;
+}
+
+bool disp_lcm_need_send_cmd(
+	struct disp_lcm_handle *plcm,
+	unsigned int last_dynfps, unsigned int new_dynfps)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+	struct LCM_PARAMS *lcm_param = NULL;
+	struct LCM_DSI_PARAMS *dsi_params = NULL;
+	int from_level = -1;
+	int to_level = -1;
+	struct dfps_info *dfps_params = NULL;
+	unsigned int j = 0;
+
+	DISPFUNC();
+
+	if (_is_lcm_inited(plcm)) {
+		lcm_drv = plcm->drv;
+		lcm_param = plcm->params;
+		if (lcm_param)
+			dsi_params = &(lcm_param->dsi);
+	} else {
+		DISPCHECK("%s, lcm not inited!\n", __func__);
+		return false;
+	}
+	if (!lcm_drv ||
+		!lcm_drv->dfps_send_lcm_cmd ||
+		!lcm_drv->dfps_need_send_cmd) {
+		DISPCHECK("%s, no lcm drv or no dfps func !!!\n", __func__);
+		return false;
+	}
+	if (!dsi_params ||
+		!dsi_params->dfps_enable) {
+		DISPCHECK("%s,not support dfps !!!\n", __func__);
+		return false;
+	}
+	dfps_params = dsi_params->dfps_params;
+	for (j = 0; j < dsi_params->dfps_num; j++) {
+		if ((dfps_params[j]).fps == last_dynfps)
+			from_level = (dfps_params[j]).level;
+		if ((dfps_params[j]).fps == new_dynfps)
+			to_level = (dfps_params[j]).level;
+	}
+	if (from_level < 0 ||
+		to_level < 0)
+		return false;
+	return	lcm_drv->dfps_need_send_cmd(from_level, to_level);
+}
+
+void disp_lcm_dynfps_send_cmd(
+	struct disp_lcm_handle *plcm, void *cmdq_handle,
+	unsigned int from_fps, unsigned int to_fps)
+{
+	struct LCM_DRIVER *lcm_drv = NULL;
+	struct LCM_PARAMS *lcm_param = NULL;
+	struct LCM_DSI_PARAMS *dsi_params = NULL;
+	unsigned int from_level = 0;
+	unsigned int to_level = 0;
+	struct dfps_info *dfps_params = NULL;
+	unsigned int j = 0;
+	/*DISPFUNC();*/
+	if (_is_lcm_inited(plcm)) {
+		lcm_drv = plcm->drv;
+		lcm_param = plcm->params;
+		if (lcm_param)
+			dsi_params = &(lcm_param->dsi);
+	}
+	if (!lcm_drv || !lcm_drv->dfps_send_lcm_cmd) {
+		DISPCHECK("%s, no lcm drv or no dfps func !!!\n", __func__);
+		goto done;
+	}
+	if (!dsi_params ||
+		!dsi_params->dfps_enable) {
+		DISPCHECK("%s,not support dfps !!!\n", __func__);
+		goto done;
+	}
+	dfps_params = dsi_params->dfps_params;
+	for (j = 0; j < dsi_params->dfps_num; j++) {
+		if ((dfps_params[j]).fps == from_fps)
+			from_level = (dfps_params[j]).level;
+		if ((dfps_params[j]).fps == to_fps)
+			to_level = (dfps_params[j]).level;
+	}
+	lcm_drv->dfps_send_lcm_cmd(cmdq_handle,
+		from_level, to_level);
+done:
+	DISPCHECK("%s,add done\n", __func__);
+}
+
+/*-------------------DynFPS end-----------------------------*/
+#endif

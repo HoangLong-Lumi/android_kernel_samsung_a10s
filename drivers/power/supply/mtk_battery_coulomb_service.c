@@ -11,6 +11,8 @@
 #include <linux/platform_device.h>
 #include "mtk_battery.h"
 
+int fix_coverity;
+
 static void wake_up_gauge_coulomb(struct mtk_battery *gm)
 {
 	unsigned long flags = 0;
@@ -180,19 +182,22 @@ void gauge_coulomb_start(struct gauge_consumer *coulomb, int car)
 	bool wake = false;
 	int car_now;
 	int val;
-	struct mtk_coulomb_service *cs;
+	struct mtk_coulomb_service *cs = NULL;
 	struct mtk_battery *gm;
 
 	gm = get_mtk_battery();
-	cs = &gm->cs;
+
+	if (gm != NULL)
+		cs = &gm->cs;
 
 	if (car == 0)
 		return;
 
-	if (cs->init == false) {
-		cs = NULL;
+	if (cs == NULL)
 		return;
-	}
+
+	if (cs->init == false)
+		return;
 
 	mutex_lock(&cs->coulomb_lock);
 	gauge_get_property(GAUGE_PROP_COULOMB, &val);
@@ -272,7 +277,6 @@ void gauge_coulomb_stop(struct gauge_consumer *coulomb)
 	cs = &gm->cs;
 
 	if (cs->init == false) {
-		cs = NULL;
 		return;
 	}
 
@@ -406,6 +410,10 @@ static int gauge_coulomb_thread(void *arg)
 
 	gm = get_mtk_battery();
 	bm_debug("[%s]=>\n", __func__);
+
+	if (gm == NULL)
+		fix_coverity = 1;
+
 	while (1) {
 		wait_event(cs->wait_que, (cs->coulomb_thread_timeout == true));
 		cs->coulomb_thread_timeout = false;
@@ -421,6 +429,9 @@ static int gauge_coulomb_thread(void *arg)
 
 		get_monotonic_boottime(&end);
 		duraction = timespec_sub(end, start);
+
+		if (fix_coverity == 1)
+			break;
 
 		bm_debug(
 			"%s time:%d ms\n",

@@ -480,6 +480,12 @@ unsigned int mtkfb_query_buf_va(unsigned int session_id, unsigned int layer_id,
 	ASSERT(layer_id < DISP_SESSION_TIMELINE_COUNT);
 
 	session_info = _get_session_sync_info(session_id);
+	if (session_info == NULL) {
+		DISPERR("cant get sync info for session_id:0x%08x\n",
+			session_id);
+		return 0;
+	}
+
 	layer_info = &(session_info->session_layer_info[layer_id]);
 	if (layer_id != layer_info->layer_id) {
 		pr_info("wrong layer id %d(rt), %d(in)!\n",
@@ -512,10 +518,17 @@ unsigned int mtkfb_query_release_idx(unsigned int session_id,
 	struct mtkfb_fence_buf_info *buf = NULL;
 	struct mtkfb_fence_buf_info *pre_buf = NULL;
 	unsigned int idx = 0x0;
-	struct disp_session_sync_info *session_info =
-		_get_session_sync_info(session_id);
-	struct disp_sync_info *layer_info =
-		&(session_info->session_layer_info[layer_id]);
+	struct disp_session_sync_info *session_info = NULL;
+	struct disp_sync_info *layer_info = NULL;
+
+	session_info = _get_session_sync_info(session_id);
+	if (session_info == NULL) {
+		DISPERR("cant get sync info for session_id:0x%08x\n",
+			session_id);
+		return 0;
+	}
+
+	layer_info = &(session_info->session_layer_info[layer_id]);
 
 	if (layer_id != layer_info->layer_id) {
 		pr_info("wrong layer id %d(rt), %d(in)!\n",
@@ -583,6 +596,12 @@ unsigned int mtkfb_update_buf_ticket(unsigned int session_id,
 	}
 
 	session_info = _get_session_sync_info(session_id);
+	if (session_info == NULL) {
+		DISPERR("cant get sync info for session_id:0x%08x\n",
+			session_id);
+		return 0;
+	}
+
 	layer_info = &(session_info->session_layer_info[layer_id]);
 
 	if (layer_id != layer_info->layer_id) {
@@ -604,20 +623,26 @@ unsigned int mtkfb_update_buf_ticket(unsigned int session_id,
 	return mva;
 }
 
-unsigned int mtkfb_query_idx_by_ticket(unsigned int session_id,
+int mtkfb_query_idx_by_ticket(unsigned int session_id,
 	unsigned int layer_id, unsigned int ticket)
 {
 	struct mtkfb_fence_buf_info *buf = NULL;
 	int idx = -1;
-	struct disp_session_sync_info *session_info =
-		_get_session_sync_info(session_id);
-	struct disp_sync_info *layer_info =
-		&(session_info->session_layer_info[layer_id]);
+	struct disp_session_sync_info *session_info = NULL;
+	struct disp_sync_info *layer_info = NULL;
 
+	session_info = _get_session_sync_info(session_id);
+	if (session_info == NULL) {
+		DISPERR("cant get sync info for session_id:0x%08x\n",
+			session_id);
+		return idx;
+	}
+
+	layer_info = &(session_info->session_layer_info[layer_id]);
 	if (layer_id != layer_info->layer_id) {
 		DISPERR("wrong layer id %d(rt), %d(in)!\n",
 			layer_info->layer_id, layer_id);
-		return 0;
+		return idx;
 	}
 
 	mutex_lock(&layer_info->sync_lock);
@@ -645,6 +670,12 @@ bool mtkfb_update_buf_info_new(unsigned int session_id,
 	}
 
 	session_info = _get_session_sync_info(session_id);
+	if (session_info == NULL) {
+		DISPERR("cant get sync info for session_id:0x%08x\n",
+			session_id);
+		return 0;
+	}
+
 	layer_info = &(session_info->session_layer_info[buf_info->layer_id]);
 	if (buf_info->layer_id != layer_info->layer_id) {
 		DISPERR("wrong layer id %d(rt), %d(in)!\n",
@@ -679,6 +710,12 @@ unsigned int mtkfb_query_buf_info(unsigned int session_id,
 	int query_info = 0;
 
 	session_info = _get_session_sync_info(session_id);
+	if (session_info == NULL) {
+		DISPERR("cant get sync info for session_id:0x%08x\n",
+			session_id);
+		return 0;
+	}
+
 	layer_info = &(session_info->session_layer_info[layer_id]);
 	if (layer_id != layer_info->layer_id) {
 		DISPERR("wrong layer id %d(rt), %d(in)!\n",
@@ -974,6 +1011,43 @@ void mtkfb_release_session_fence(unsigned int session_id)
 	for (i = 0; i < ARRAY_SIZE(session_sync_info->session_layer_info); i++)
 		mtkfb_release_layer_fence(session_id, i);
 }
+
+/* release primary display present fence */
+void mtkfb_release_present_fence(unsigned int session_id,
+	unsigned int fence_idx)
+{
+	struct disp_sync_info *layer_info = NULL;
+	unsigned int timeline_id = 0;
+	int fence_increment = 0;
+
+	timeline_id = disp_sync_get_present_timeline_id();
+	layer_info = _get_sync_info(session_id, timeline_id);
+	if (layer_info == NULL) {
+		DISPERR("%s, layer_info is null\n", __func__);
+		return;
+	}
+
+	mutex_lock(&layer_info->sync_lock);
+	fence_increment = fence_idx - layer_info->timeline->value;
+
+	if (fence_increment <= 0)
+		goto done;
+	if (fence_increment >= 2)
+		DISPPR_FENCE("Warning, R/%s%d/L%d/timeline idx:%d/fence:%d\n",
+			disp_session_mode_spy(session_id),
+			DISP_SESSION_DEV(session_id), timeline_id,
+			layer_info->timeline->value, fence_idx);
+
+	timeline_inc(layer_info->timeline, fence_increment);
+	DISPPR_FENCE("RL+/%s%d/L%d/id%d\n", disp_session_mode_spy(session_id),
+		DISP_SESSION_DEV(session_id), timeline_id, fence_idx);
+
+	mmprofile_log_ex(ddp_mmp_get_events()->present_fence_release,
+		MMPROFILE_FLAG_PULSE, fence_idx, fence_increment);
+done:
+	mutex_unlock(&layer_info->sync_lock);
+}
+
 int disp_sync_get_ovl_timeline_id(int layer_id)
 {
 	return DISP_SESSION_OVL_TIMELINE_ID(layer_id);

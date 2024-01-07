@@ -10,7 +10,13 @@
 #ifdef CONFIG_MTK_AEE_FEATURE
 #include <aee.h>
 #endif
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 #include <linux/debugfs.h>
+#endif
+#if IS_ENABLED(CONFIG_PROC_FS)
+#include <linux/proc_fs.h>
+#endif
+#include <linux/seq_file.h>
 #include <linux/platform_device.h>
 #include <linux/miscdevice.h>
 
@@ -88,13 +94,18 @@ extern int gM4U_log_to_uart;
 	}
 
 #if (defined(CONFIG_TRUSTONIC_TEE_SUPPORT) || \
-	defined(CONFIG_MICROTRUST_TEE_SUPPORT)) && \
+	defined(CONFIG_MICROTRUST_TEE_SUPPORT) || \
+	defined(CONFIG_TEEGRIS_TEE_SUPPORT)) && \
 	defined(CONFIG_TEE)
 #if defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
 #define M4U_TEE_SERVICE_ENABLE
 #elif defined(CONFIG_MTK_CAM_SECURITY_SUPPORT)
 #define M4U_TEE_SERVICE_ENABLE
 #endif
+#endif
+
+#if defined(MTK_CAM_GENIEZONE_SUPPORT)
+#define M4U_GZ_SERVICE_ENABLE
 #endif
 
 #include "m4u_hw.h"
@@ -129,11 +140,36 @@ extern void show_pte(struct mm_struct *mm, unsigned long addr);
 
 #include <linux/clk.h>
 
+#if IS_ENABLED(CONFIG_PROC_FS)
+#define DEFINE_PROC_ATTRIBUTE(__fops, __get, __set, __fmt)		  \
+static int __fops ## _open(struct inode *inode, struct file *file)	  \
+{									  \
+	struct inode local_inode = *inode;				  \
+									  \
+	local_inode.i_private = PDE_DATA(inode);			  \
+	__simple_attr_check_format(__fmt, 0ull);			  \
+	return simple_attr_open(&local_inode, file, __get, __set, __fmt); \
+}									  \
+static const struct file_operations __fops = {				  \
+	.owner	 = THIS_MODULE,						  \
+	.open	 = __fops ## _open,					  \
+	.release = simple_attr_release,					  \
+	.read	 = simple_attr_read,					  \
+	.write	 = simple_attr_write,					  \
+	.llseek	 = generic_file_llseek,					  \
+}
+#endif
+
 struct m4u_device {
 	struct miscdevice dev;
 	struct proc_dir_entry *m4u_dev_proc_entry;
 	struct device *pDev[TOTAL_M4U_NUM];
-	struct dentry *debug_root;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+		struct dentry *debug_root;
+#endif
+#if IS_ENABLED(CONFIG_PROC_FS)
+		struct proc_dir_entry *proc_root;
+#endif
 	unsigned long m4u_base[TOTAL_M4U_NUM];
 	unsigned int irq_num[TOTAL_M4U_NUM];
 	struct clk *infra_m4u;
@@ -345,6 +381,7 @@ struct M4U_DMA {
 #define MTK_M4U_T_DMA_OP	      _IOW(MTK_M4U_MAGICNO, 29, int)
 
 #define MTK_M4U_T_SEC_INIT	    _IOW(MTK_M4U_MAGICNO, 50, int)
+#define MTK_M4U_GZ_SEC_INIT	    _IOW(MTK_M4U_MAGICNO, 60, int)
 
 #ifdef M4U_TEE_SERVICE_ENABLE
 int m4u_config_port_tee(struct m4u_port_config_struct *pM4uPort);

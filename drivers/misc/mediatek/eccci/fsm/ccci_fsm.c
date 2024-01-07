@@ -35,6 +35,12 @@ int force_md_stop(struct ccci_fsm_monitor *monitor_ctl)
 	int ret = -1;
 	struct ccci_fsm_ctl *ctl = fsm_get_entity_by_md_id(monitor_ctl->md_id);
 
+	if (!ctl) {
+		CCCI_ERROR_LOG(-1, FSM,
+			"%s:fsm_get_entity_by_md_id fail\n",
+			__func__);
+		return -1;
+	}
 	needforcestop = 1;
 	ret = fsm_append_command(ctl, CCCI_COMMAND_STOP, 0);
 	CCCI_NORMAL_LOG(monitor_ctl->md_id, FSM,
@@ -52,6 +58,12 @@ void mdee_set_ex_time_str(unsigned char md_id, unsigned int type, char *str)
 {
 	struct ccci_fsm_ctl *ctl = fsm_get_entity_by_md_id(md_id);
 
+	if (!ctl) {
+		CCCI_ERROR_LOG(-1, FSM,
+			"%s:fsm_get_entity_by_md_id fail\n",
+			__func__);
+		return;
+	}
 	mdee_set_ex_start_str(&ctl->ee_ctl, type, str);
 }
 
@@ -449,7 +461,7 @@ static void fsm_routine_wdt(struct ccci_fsm_ctl *ctl,
 	int reset_md = 0;
 	int is_epon_set = 0;
 	struct device_node *node;
-	unsigned int offset_apon_md1;
+	unsigned int offset_apon_md1 = 0;
 	struct ccci_smem_region *mdss_dbg
 		= ccci_md_get_smem_by_user_id(ctl->md_id,
 			SMEM_USER_RAW_MDSS_DBG);
@@ -705,6 +717,7 @@ struct ccci_fsm_ctl *fsm_get_entity_by_md_id(int md_id)
 int ccci_fsm_init(int md_id)
 {
 	struct ccci_fsm_ctl *ctl;
+	int ret = 0;
 
 	if (md_id < 0 || md_id >= ARRAY_SIZE(ccci_fsm_entries))
 		return -CCCI_ERR_INVALID_PARAM;
@@ -720,8 +733,13 @@ int ccci_fsm_init(int md_id)
 	spin_lock_init(&ctl->command_lock);
 	spin_lock_init(&ctl->cmd_complete_lock);
 	atomic_set(&ctl->fs_ongoing, 0);
-	snprintf(ctl->wakelock_name, sizeof(ctl->wakelock_name),
+	ret = snprintf(ctl->wakelock_name, sizeof(ctl->wakelock_name),
 		"md%d_wakelock", ctl->md_id + 1);
+	if (ret < 0 || ret >= sizeof(ctl->wakelock_name)) {
+		CCCI_ERROR_LOG(ctl->md_id, FSM,
+			"%s-%d:snprintf fail,ret=%d\n", __func__, __LINE__, ret);
+		return -1;
+	}
 	ctl->wakelock = wakeup_source_register(NULL, ctl->wakelock_name);
 	if (!ctl->wakelock) {
 		CCCI_ERROR_LOG(ctl->md_id, FSM,

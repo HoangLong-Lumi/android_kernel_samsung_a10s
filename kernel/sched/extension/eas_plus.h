@@ -27,6 +27,7 @@
 
 #define MIGR_IDLE_BALANCE      1
 #define MIGR_IDLE_RUNNING      2
+#define MIGR_ROTATION          3
 DECLARE_PER_CPU(struct task_struct*, migrate_task);
 
 struct rq *__migrate_task(struct rq *rq, struct rq_flags *rf,
@@ -88,6 +89,7 @@ int cpu_prefer(struct task_struct *task);
 #endif
 
 #ifdef CONFIG_MTK_SCHED_BIG_TASK_MIGRATE
+#include "../../drivers/misc/mediatek/include/mt-plat/eas_ctrl.h"
 #define TASK_ROTATION_THRESHOLD_NS      6000000
 #define HEAVY_TASK_NUM  4
 
@@ -99,31 +101,19 @@ struct task_rotate_work {
 	int dst_cpu;
 };
 
+struct task_rotate_reset_uclamp_work {
+	struct work_struct w;
+};
+
 DECLARE_PER_CPU(struct task_rotate_work, task_rotate_works);
-DECLARE_PER_CPU(unsigned long, rotate_flags);
 extern bool big_task_rotation_enable;
 extern void task_rotate_work_init(void);
 extern void check_for_migration(struct task_struct *p);
-
-static inline int is_reserved(int cpu)
-{
-	return (per_cpu(rotate_flags, cpu) == 1);
-}
-
-static inline void mark_reserved(int cpu)
-{
-	per_cpu(rotate_flags, cpu) = 1;
-}
-
-static inline void clear_reserved(int cpu)
-{
-	per_cpu(rotate_flags, cpu) = 0;
-}
-
-static inline bool is_max_capacity_cpu(int cpu)
-{
-	return capacity_orig_of(cpu) == SCHED_CAPACITY_SCALE;
-}
+extern int is_reserved(int cpu);
+extern bool is_min_capacity_cpu(int cpu);
+extern bool is_max_capacity_cpu(int cpu);
+extern struct task_rotate_reset_uclamp_work task_rotate_reset_uclamp_works;
+extern bool set_uclamp;
 #endif
 
 /**

@@ -224,6 +224,32 @@ int get_dsp_task_attr(int dsp_id, int task_attr)
 	return get_task_attr(dsp_id, task_attr);
 }
 
+int get_dsp_task_id_from_str(const char *task_name)
+{
+	int ret = -1;
+
+	if (strstr(task_name, "primary"))
+		ret = AUDIO_TASK_PRIMARY_ID;
+	else if (strstr(task_name, "deepbuffer"))
+		ret = AUDIO_TASK_DEEPBUFFER_ID;
+	else if (strstr(task_name, "voip"))
+		ret = AUDIO_TASK_VOIP_ID;
+	else if (strstr(task_name, "playback"))
+		ret = AUDIO_TASK_PLAYBACK_ID;
+	else if (strstr(task_name, "call_final"))
+		ret = AUDIO_TASK_CALL_FINAL_ID;
+	else if (strstr(task_name, "ktv"))
+		ret = AUDIO_TASK_KTV_ID;
+	else if (strstr(task_name, "offload"))
+		ret = AUDIO_TASK_OFFLOAD_ID;
+	else if (strstr(task_name, "capture"))
+		ret = AUDIO_TASK_CAPTURE_UL1_ID;
+	else
+		pr_info("%s(), %s has no task id, ret %d",
+			__func__, task_name, ret);
+
+	return ret;
+}
 
 static int set_aud_buf_attr(struct audio_hw_buffer *audio_hwbuf,
 			    struct snd_pcm_substream *substream,
@@ -235,7 +261,7 @@ static int set_aud_buf_attr(struct audio_hw_buffer *audio_hwbuf,
 	int ret = 0;
 
 	ret = set_afe_audio_pcmbuf(&dsp_memif->audio_afepcm_buf,
-				   substream, params);
+				   substream);
 	if (ret < 0) {
 		pr_info("set_afe_audio_pcmbuf fail\n");
 		return -1;
@@ -289,7 +315,6 @@ static int set_aud_buf_attr(struct audio_hw_buffer *audio_hwbuf,
 	return 0;
 }
 
-
 /* function warp playback buffer information send to dsp */
 int afe_pcm_ipi_to_dsp(int command, struct snd_pcm_substream *substream,
 		       struct snd_pcm_hw_params *params,
@@ -299,25 +324,20 @@ int afe_pcm_ipi_to_dsp(int command, struct snd_pcm_substream *substream,
 	int task_id = 0, ret = 0;
 	struct mtk_base_dsp *dsp = (struct mtk_base_dsp *)local_base_dsp;
 	void *ipi_audio_buf; /* dsp <-> audio data struct*/
-	char *payload;
 	struct mtk_base_dsp_mem *dsp_memif;
 	struct mtk_base_afe_memif *memif = &afe->memif[dai->id];
 
 	task_id = get_taskid_by_afe_daiid(dai->id);
-
-	if (get_task_attr(task_id, ADSP_TASK_ATTR_RUMTIME) <= 0 ||
-	    get_task_attr(task_id, ADSP_TASK_ATTR_DEFAULT) <= 0) {
-		pr_info("%s task_id[%d] disable", __func__, task_id);
-		return -1;
-	}
-
 	if (task_id < 0 || task_id >= AUDIO_TASK_DAI_NUM) {
 		pr_debug("%s() not support\n", __func__);
 		return -1;
 	}
 
+	if (get_task_attr(task_id, ADSP_TASK_ATTR_RUMTIME) <= 0 ||
+	    get_task_attr(task_id, ADSP_TASK_ATTR_DEFAULT) <= 0)
+		return -1;
+
 	dsp_memif = (struct mtk_base_dsp_mem *)&dsp->dsp_mem[task_id];
-	payload = (char *)&dsp->dsp_mem[task_id].msg_atod_share_buf.phy_addr;
 
 	/* send msg by task , unsing common function*/
 	switch (command) {
@@ -329,6 +349,7 @@ int afe_pcm_ipi_to_dsp(int command, struct snd_pcm_substream *substream,
 				 memif,
 				 dai);
 
+		/* send audio_afepcm_buf to SCP side*/
 		ipi_audio_buf = (void *)
 				 dsp_memif->msg_atod_share_buf.va_addr;
 		memcpy((void *)ipi_audio_buf,
@@ -338,6 +359,7 @@ int afe_pcm_ipi_to_dsp(int command, struct snd_pcm_substream *substream,
 #ifdef DEBUG_VERBOSE
 		dump_audio_hwbuffer(ipi_audio_buf);
 #endif
+
 		/* send to task with hw_param information ,
 		 * buffer and pcm attribute
 		 */
@@ -348,7 +370,8 @@ int afe_pcm_ipi_to_dsp(int command, struct snd_pcm_substream *substream,
 				 sizeof(unsigned int),
 				 (unsigned int)
 				 dsp_memif->msg_atod_share_buf.phy_addr,
-				 payload);
+				 (char *)
+				 &dsp_memif->msg_atod_share_buf.phy_addr);
 		break;
 	case AUDIO_DSP_TASK_PCM_PREPARE:
 		set_aud_buf_attr(&dsp_memif->audio_afepcm_buf,

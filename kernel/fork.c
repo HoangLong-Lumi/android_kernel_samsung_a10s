@@ -246,6 +246,7 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 
 	if (likely(page)) {
 		tsk->stack = page_address(page);
+		tsk->stack = kasan_reset_tag(tsk->stack);
 		return tsk->stack;
 	}
 	return NULL;
@@ -281,6 +282,7 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk,
 {
 	unsigned long *stack;
 	stack = kmem_cache_alloc_node(thread_stack_cache, THREADINFO_GFP, node);
+	stack = kasan_reset_tag(stack);
 	tsk->stack = stack;
 	return stack;
 }
@@ -383,7 +385,7 @@ static void account_kernel_stack(struct task_struct *tsk, int account)
 
 static void release_task_stack(struct task_struct *tsk)
 {
-	if (tsk->state != TASK_DEAD)
+	if (WARN_ON(tsk->state != TASK_DEAD))
 		return;  /* Better to leak the stack than to free prematurely */
 
 	account_kernel_stack(tsk, -1);

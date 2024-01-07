@@ -126,7 +126,7 @@ const char*
 {
 	#define GET_ENUM_STRING(str)	#str
 	return reason == BY_FRM ? GET_ENUM_STRING(BY_FRM) :
-		reason == BY_SRR ? GET_ENUM_STRING(BY_SSR) :
+		reason == BY_SRR ? GET_ENUM_STRING(BY_SRR) :
 		reason == BY_UFS ? GET_ENUM_STRING(BY_UFS) :
 		reason == BY_TEE ? GET_ENUM_STRING(BY_TEE) :
 		reason == BY_DCS ? GET_ENUM_STRING(BY_DCS) :
@@ -280,7 +280,7 @@ int mtk_idle_enter(
 	__mtk_idle_footprint(IDLE_FP_UART_SLEEP);
 
 	/* uart sleep */
-	#if defined(CONFIG_SERIAL_8250_MT6577)
+	#if defined(CONFIG_SERIAL_8250_MT6577) && !defined(SECURE_SERIAL_8250)
 	if (!(idle_flag & MTK_IDLE_LOG_DUMP_LP_GS)) {
 		if (mtk8250_request_to_sleep()) {
 			pr_info_ratelimited("Power/swap %s Fail to request uart sleep\n",
@@ -300,7 +300,7 @@ int mtk_idle_enter(
 	__mtk_idle_footprint(IDLE_FP_LEAVE_WFI);
 
 	/* uart resume */
-	#if defined(CONFIG_SERIAL_8250_MT6577)
+	#if defined(CONFIG_SERIAL_8250_MT6577) && !defined(SECURE_SERIAL_8250)
 	if (!(idle_flag & MTK_IDLE_LOG_DUMP_LP_GS))
 		mtk8250_request_to_wakeup();
 RESTORE_UART:

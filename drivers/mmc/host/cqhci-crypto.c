@@ -30,6 +30,7 @@ static void cqhci_crypto_program_key(struct cqhci_host *host,
 	u32 slot_offset = host->crypto_cfg_register + slot * sizeof(*cfg);
 	int i;
 
+	msdc_ungate_clock(host->mmc);
 	/* Ensure that CFGE is cleared before programming the key */
 	cqhci_writel(host, 0, slot_offset + 16 * sizeof(cfg->reg_val[0]));
 	for (i = 0; i < 16; i++) {
@@ -42,6 +43,7 @@ static void cqhci_crypto_program_key(struct cqhci_host *host,
 	/* Write dword 16 */
 	cqhci_writel(host, le32_to_cpu(cfg->reg_val[16]),
 		     slot_offset + 16 * sizeof(cfg->reg_val[0]));
+	msdc_gate_clock(host->mmc);
 }
 
 static int cqhci_crypto_keyslot_program(struct keyslot_manager *ksm,
@@ -72,6 +74,12 @@ static int cqhci_crypto_keyslot_program(struct keyslot_manager *ksm,
 		return -EOPNOTSUPP;
 
 	cfg.data_unit_size = data_unit_mask;
+#ifdef CONFIG_MMC_CRYPTO_LEGACY
+	/* used fsrypt v2 in OTA fscrypt v1 environment */
+	if (key->hie_duint_size != 4096)
+		cfg.data_unit_size = 1;
+#endif
+
 	cfg.crypto_cap_idx = cap_idx;
 	cfg.config_enable = CQHCI_CRYPTO_CONFIGURATION_ENABLE;
 
@@ -120,7 +128,8 @@ bool cqhci_crypto_enable(struct cqhci_host *host)
 		return false;
 
 	/* Reset might clear all keys, so reprogram all the keys. */
-	keyslot_manager_reprogram_all_keys(host->mmc->ksm);
+	if (host->mmc->ksm)
+		keyslot_manager_reprogram_all_keys(host->mmc->ksm);
 	return true;
 }
 
@@ -155,6 +164,9 @@ int cqhci_host_init_crypto(struct cqhci_host *host)
 	unsigned int crypto_modes_supported[BLK_ENCRYPTION_MODE_MAX] = {0};
 	int num_keyslots;
 	struct keyslot_manager *ksm;
+
+	if (host->mmc->ksm)
+		return 0;
 
 	/*
 	 * Don't use crypto if the vendor specific driver doesn't set the
@@ -194,13 +206,19 @@ int cqhci_host_init_crypto(struct cqhci_host *host)
 
 	/* The actual number of configurations supported is (CFGC+1) */
 	num_keyslots = host->crypto_capabilities.config_count + 1;
-	ksm = keyslot_manager_create(num_keyslots,
-			&cqhci_ksm_ops, crypto_modes_supported, host);
+	ksm = keyslot_manager_create(dev, num_keyslots,
+				     &cqhci_ksm_ops,
+				     BLK_CRYPTO_FEATURE_STANDARD_KEYS,
+				     crypto_modes_supported, host);
 
 	if (!ksm) {
 		err = -ENOMEM;
 		goto out_free_caps;
 	}
+
+	/* eMMC 5.2 only support 4 bytes DUN */
+	keyslot_manager_set_max_dun_bytes(ksm, 4);
+
 	host->mmc->ksm = ksm;
 
 	for (slot = 0; slot < num_keyslots; slot++)

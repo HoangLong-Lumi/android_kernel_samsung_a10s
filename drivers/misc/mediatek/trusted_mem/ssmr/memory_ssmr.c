@@ -53,11 +53,6 @@ static u64 ssmr_upper_limit = UPPER_LIMIT64;
 
 static struct device *ssmr_dev;
 
-static const struct of_device_id ssmr_of_match_table[] = {
-	{ .compatible = "mediatek,memory_ssmr"},
-	{},
-};
-
 /* clang-format off */
 const char *const ssmr_state_text[NR_STATES] = {
 	[SSMR_STATE_DISABLED]   = "[DISABLED]",
@@ -76,7 +71,8 @@ static struct SSMR_Feature _ssmr_feats[__MAX_NR_SSMR_FEATURES] = {
 		.cmd_offline = "svp=off",
 #if IS_ENABLED(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT) ||\
 	IS_ENABLED(CONFIG_TRUSTONIC_TEE_SUPPORT) ||\
-	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT)
+	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT) || \
+	IS_ENABLED(CONFIG_TEEGRIS_TEE_SUPPORT)
 		.enable = "on",
 #else
 		.enable = "off",
@@ -192,7 +188,8 @@ struct SSMR_HEAP_INFO _ssmr_heap_info[__MAX_NR_SSMR_FEATURES];
 
 #if IS_ENABLED(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT) ||\
 	IS_ENABLED(CONFIG_TRUSTONIC_TEE_SUPPORT) ||\
-	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT)
+	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT) || \
+	IS_ENABLED(CONFIG_TEEGRIS_TEE_SUPPORT)
 static int __init dedicate_svp_memory(struct reserved_mem *rmem)
 {
 	struct SSMR_Feature *feature;
@@ -444,6 +441,10 @@ static int set_memory_mapping(unsigned long start, phys_addr_t size, int map)
 	struct page_change_data data;
 	int ret;
 
+	/* flush dcache when unmap */
+	if (!map)
+		__flush_dcache_area((void *)start, size);
+
 	if (map) {
 		data.set_mask = __pgprot(PTE_VALID);
 		data.clear_mask = __pgprot(0);
@@ -477,6 +478,10 @@ static int set_memory_mapping(unsigned long start, phys_addr_t size, int map)
 
 	pr_debug("start=0x%lx, size=%pa, address=0x%p, map=%d\n", start, &size,
 		 (void *)address, map);
+
+	/* flush dcache when unmap */
+	if (!map)
+		__flush_dcache_area((void *)start, size);
 
 	while (address < (start + size)) {
 
@@ -868,7 +873,7 @@ static int memory_ssmr_sysfs_init(void)
 }
 #endif /* end of CONFIG_SYSFS */
 
-static int ssmr_probe(struct platform_device *pdev)
+int ssmr_probe(struct platform_device *pdev)
 {
 	int i;
 
@@ -883,8 +888,13 @@ static int ssmr_probe(struct platform_device *pdev)
 	/* ssmr region init */
 	finalize_scenario_size();
 
+#if IS_ENABLED(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT) ||\
+	IS_ENABLED(CONFIG_TRUSTONIC_TEE_SUPPORT) ||\
+	IS_ENABLED(CONFIG_MICROTRUST_TEE_SUPPORT) || \
+	IS_ENABLED(CONFIG_TEEGRIS_TEE_SUPPORT)
 	/* check svp statis reserved status */
 	get_svp_memory_info();
+#endif
 
 	for (i = 0; i < __MAX_NR_SSMR_FEATURES; i++) {
 		memory_ssmr_init_feature(_ssmr_feats[i].feat_name,
@@ -902,17 +912,3 @@ static int ssmr_probe(struct platform_device *pdev)
 
 	return 0;
 }
-
-static struct platform_driver ssmr_driver = {
-	.probe = ssmr_probe,
-	.driver = {
-		.name = "driver-ssmr",
-		.of_match_table = ssmr_of_match_table,
-	},
-};
-module_platform_driver(ssmr_driver);
-
-MODULE_AUTHOR("James Hsu <james.hsu@medaitek.com>");
-MODULE_DESCRIPTION("ssmr driver");
-MODULE_LICENSE("GPL v2");
-

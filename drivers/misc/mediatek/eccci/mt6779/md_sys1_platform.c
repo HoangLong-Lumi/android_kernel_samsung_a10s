@@ -14,7 +14,7 @@
 #include "ccci_config.h"
 #include "ccci_common_config.h"
 #include <linux/clk.h>
-//xuxin-pbm//#include <mach/mtk_pbm.h>
+#include <mtk_pbm.h>
 #include <mt-plat/mtk-clkbuf-bridge.h>
 #ifdef USING_PM_RUNTIME
 #include <linux/pm_runtime.h>
@@ -35,6 +35,8 @@
 #endif
 
 #include <linux/regulator/consumer.h> /* for MD PMIC */
+#include <clk-mt6779-pg.h>
+#include <mtk_spm_sleep.h>
 
 #include "ccci_core.h"
 #include "ccci_platform.h"
@@ -117,7 +119,7 @@ static void md_cldma_hw_reset(unsigned char md_id)
 {
 }
 
-#ifdef ENABLE_DEBUG_DUMP /* Fix me! */
+
 void md1_subsys_debug_dump(enum subsys_id sys)
 {
 	struct ccci_modem *md;
@@ -144,12 +146,14 @@ struct pg_callbacks md1_subsys_handle = {
 	.debug_dump = md1_subsys_debug_dump,
 };
 
+#ifdef ENABLE_DEBUG_DUMP /* Fix me! */
 void ccci_dump(void)
 {
 	md1_subsys_debug_dump(SYS_MD1);
 }
 EXPORT_SYMBOL(ccci_dump);
 #endif
+
 static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	struct ccci_dev_cfg *dev_cfg, struct md_hw_info *hw_info)
 {
@@ -278,7 +282,7 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 		"ccif_irq0:%d,ccif_irq1:%d,md_wdt_irq:%d\n",
 		hw_info->ap_ccif_irq0_id, hw_info->ap_ccif_irq1_id,
 		hw_info->md_wdt_irq_id);
-	//xuxin-clk-pg//register_pg_callback(&md1_subsys_handle);
+	register_pg_callback(&md1_subsys_handle);
 #ifdef USING_PM_RUNTIME
 	pm_runtime_enable(&dev_ptr->dev);
 	dev_pm_syscore_device(&dev_ptr->dev, true);
@@ -339,24 +343,7 @@ static void md_cd_lock_cldma_clock_src(int locked)
 
 static void md_cd_lock_modem_clock_src(int locked)
 {
-	size_t ret;
-
-	/* spm_ap_mdsrc_req(locked); */
-	mt_secure_call(MTK_SIP_KERNEL_CCCI_GET_INFO,
-		       MD_REG_AP_MDSRC_REQ, locked, 0, 0, 0, 0, 0);
-	if (locked) {
-		int settle =
-			mt_secure_call(MTK_SIP_KERNEL_CCCI_GET_INFO,
-				       MD_REG_AP_MDSRC_SETTLE, 0, 0, 0,
-				       0, 0, 0);
-		mdelay(settle);
-		ret = mt_secure_call(MTK_SIP_KERNEL_CCCI_GET_INFO,
-			       MD_REG_AP_MDSRC_ACK, 0, 0, 0, 0, 0, 0);
-
-		if (ret > 0)
-			CCCI_NOTICE_LOG(-1, TAG,
-				"error: mt_secure_call() = %zu\n", ret);
-	}
+	spm_ap_mdsrc_req(locked);
 }
 
 static void md_cd_dump_md_bootup_status(struct ccci_modem *md)
@@ -554,10 +541,10 @@ static void md1_pmic_setting_on(void)
 
 }
 
-//xuxin-pbm//void __attribute__((weak)) kicker_pbm_by_md(enum pbm_kicker kicker,
-//xuxin-pbm//	bool status)
-//xuxin-pbm//{
-//xuxin-pbm//}
+void __attribute__((weak)) kicker_pbm_by_md(enum pbm_kicker kicker,
+	bool status)
+{
+}
 
 static int md_cd_soft_power_off(struct ccci_modem *md, unsigned int mode)
 {
@@ -690,7 +677,7 @@ static int md_cd_power_on(struct ccci_modem *md)
 
 		CCCI_BOOTUP_LOG(md->index, TAG,
 			"enable md sys clk done,ret = %d\n", ret);
-		//xuxin-pbm//kicker_pbm_by_md(KR_MD1, true);
+		kicker_pbm_by_md(KR_MD1, true);
 		CCCI_BOOTUP_LOG(md->index, TAG,
 			"Call end kicker_pbm_by_md(0,true)\n");
 		break;
@@ -763,7 +750,7 @@ static int md_cd_power_off(struct ccci_modem *md, unsigned int timeout)
 		clk_buf_set_by_flightmode(true);
 
 		/* 5. DLPT */
-		//xuxin-pbm//kicker_pbm_by_md(KR_MD1, false);
+		kicker_pbm_by_md(KR_MD1, false);
 		CCCI_BOOTUP_LOG(md->index, TAG,
 			"Call end kicker_pbm_by_md(0,false)\n");
 		break;

@@ -23,6 +23,8 @@
 #define VPU_MAX_CAP 100
 #define MDLA_MAX_CAP 100
 #define RESET_TOLERENCE 3
+#define DEFAULT_JUMP_CHECK_NUM 21
+#define JUMP_VOTE_MAX_I 60
 
 extern int (*fbt_notifier_cpu_frame_time_fps_stabilizer)(
 	int pid,
@@ -64,6 +66,8 @@ struct FSTB_FRAME_INFO {
 	unsigned long long queue_time_ts[FRAME_TIME_BUFFER_SIZE]; /*timestamp*/
 	int queue_time_begin;
 	int queue_time_end;
+	int vote_fps[JUMP_VOTE_MAX_I];
+	int vote_i;
 	unsigned long long weighted_cpu_time[FRAME_TIME_BUFFER_SIZE];
 	unsigned long long weighted_cpu_time_ts[FRAME_TIME_BUFFER_SIZE];
 	unsigned long long weighted_gpu_time[FRAME_TIME_BUFFER_SIZE];
@@ -77,6 +81,7 @@ struct FSTB_FRAME_INFO {
 
 	unsigned long long gblock_b;
 	unsigned long long gblock_time;
+	int fps_raise_flag;
 };
 
 struct FSTB_RENDER_TARGET_FPS {

@@ -16,6 +16,13 @@
 #define spm_is_wakesrc_invalid(wakesrc)     (!!((u32)(wakesrc) & 0xc0003803))
 #define CPU_FOOTPRINT_SHIFT 24
 
+struct spm_wakesrc_irq_list {
+	unsigned int wakesrc;
+	const char *name;
+	int order;
+	unsigned int irq_no;
+};
+
 enum spm_suspend_step {
 	SPM_SUSPEND_ENTER = 0x00000001,
 	SPM_SUSPEND_ENTER_UART_SLEEP = 0x00000003,
@@ -42,6 +49,8 @@ ssize_t get_spm_sleep_count(char *ToUserBuf
 ssize_t get_spm_last_wakeup_src(char *ToUserBuf
 			, size_t sz, void *priv);
 ssize_t get_spm_last_debug_flag(char *ToUserBuf
+			, size_t sz, void *priv);
+ssize_t get_spmfw_version(char *ToUserBuf
 			, size_t sz, void *priv);
 void spm_output_sleep_option(void);
 
@@ -75,9 +84,6 @@ void spm_suspend_post_process(struct pwr_ctrl *pwrctrl);
 /**************************************
  * External functions and variable
  **************************************/
-#if defined(CONFIG_MTK_EIC) || defined(CONFIG_PINCTRL_MTK)
-extern void mt_eint_print_status(void);
-#endif
 
 #ifdef CONFIG_MTK_TINYSYS_SCP_SUPPORT
 extern void mt_print_scp_ipi_id(void);

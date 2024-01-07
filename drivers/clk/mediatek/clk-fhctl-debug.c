@@ -110,6 +110,11 @@ static ssize_t fh_ctrl_proc_write(struct file *file,
 	kbuf[count] = '\0';
 
 	n = sscanf(kbuf, "%x %x %x", &cmd, &pll_id, &p1);
+	if ((n != 3) && (n != 2)) {
+		pr_info("error input format\n");
+		return -EINVAL;
+	}
+
 	pr_info("pll:0x%x cmd:%x p1:%x", pll_id, cmd, p1);
 
 	if ((cmd < FH_DBG_CMD_ID) && (cmd > FH_DBG_CMD_MAX)) {
@@ -239,8 +244,8 @@ static int mt_fh_dumpregs_read(struct seq_file *m, void *data)
 		fh = mtk_fh_get_fh_obj_tbl(fhctl, i);
 		if (fh == NULL) {
 			pr_info(" fh:NULL pll_id:%d", i);
-			seq_printf(m, "ERROR PLL_ID:%d (%s) NULL\r\n",
-						i, fh->pll_data->pll_name);
+			seq_printf(m, "ERROR PLL_ID:%d clk_mt_fhctl is NULL\r\n",
+						i);
 			return 0;
 		}
 

@@ -59,23 +59,48 @@ enum cmd_hist_event {
 	CMD_PERF_MODE,
 	CMD_DEBUG_PROC,
 	CMD_GENERIC,
+	CMD_CLK_GATING,
 };
 
-struct cmd_hist_struct {
-	enum cmd_hist_event event;
+struct utp_cmd_struct {
 	u8 opcode;
 	u8 crypt_en;
 	u8 crypt_keyslot;
-	u8 cpu;
 	u16 tag;
-	pid_t pid;
+	u32 doorbell;
+	u32 intr;
 	int transfer_len;
 	u64 lba;
+};
+
+struct uic_cmd_struct {
+	u8 cmd;
+	u32 arg1;
+	u32 arg2;
+	u32 arg3;
+};
+
+struct clk_gating_event_struct {
+	u8 state;
+};
+
+struct cmd_hist_struct {
+	u8 cpu;
+	enum cmd_hist_event event;
+	pid_t pid;
 	u64 time;
 	u64 duration;
+	union {
+		struct utp_cmd_struct utp;
+		struct uic_cmd_struct uic;
+		struct clk_gating_event_struct clk_gating;
+	} cmd;
 };
 
 int ufsdbg_register(struct device *dev);
+int cmd_hist_enable(void);
+int cmd_hist_disable(void);
+void ufs_mediatek_dbg_dump(void);
 
 #endif
 

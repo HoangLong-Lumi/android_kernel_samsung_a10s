@@ -752,6 +752,9 @@ static int ext_id_tuning(struct disp_layer_info *info, int disp)
 	int ovl_num;
 #endif
 
+	if (disp < 0)
+		return -EFAULT;
+
 	if (info->layer_num[disp] <= 0)
 		return 0;
 
@@ -1836,6 +1839,8 @@ int layering_rule_start(struct disp_layer_info *disp_info_user,
 		layering_info.hrt_num = 0;
 
 	ret = dispatch_ovl_id(&layering_info);
+	if (l_rule_ops->clear_layer)
+		l_rule_ops->clear_layer(&layering_info);
 	check_layering_result(&layering_info);
 
 	HRT_SET_PATH_SCENARIO(layering_info.hrt_num, l_rule_info->disp_path);
@@ -1904,6 +1909,8 @@ static char *parse_hrt_data_value(char *start, long *value)
 	int ret;
 
 	tok_start = strchr(start + 1, ']');
+	if (!tok_start)
+		return tok_end;
 	tok_end = strchr(tok_start + 1, '[');
 	if (tok_end)
 		*tok_end = 0;
@@ -1967,7 +1974,7 @@ static int load_hrt_test_data(struct disp_layer_info *disp_info)
 				goto end;
 			tok = parse_hrt_data_value(tok, &disp_id);
 
-			if (disp_id > HRT_SECONDARY)
+			if (disp_id > HRT_SECONDARY || disp_id < 0)
 				goto end;
 
 			if (layer_num != 0) {
@@ -1987,6 +1994,8 @@ static int load_hrt_test_data(struct disp_layer_info *disp_info)
 			if (!tok)
 				goto end;
 			tok = parse_hrt_data_value(tok, &disp_id);
+			if (!tok)
+				goto end;
 			for (i = 0 ; i < HRT_LAYER_DATA_NUM ; i++) {
 				tok = parse_hrt_data_value(tok, &tmp_info);
 				debug_set_layer_data(disp_info, disp_id,

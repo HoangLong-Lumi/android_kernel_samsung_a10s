@@ -137,12 +137,15 @@ config MACH_MT6761
 	select MTK_LM_MODE if !MTK_GMO_RAM_OPTIMIZE
 	select MTK_SECURITY_SW_SUPPORT
 	select MTK_DEBUG_LATCH
+	select MTK_DFD_INTERNAL_DUMP
+	select MTK_DBGTOP
 	select MTK_PLAT_SRAM_FLAG
 	select MTK_SYSTRACKER_V2
 	select MTK_L2C_PARITY_CHECK
 	select MTK_PMQOS
 	select ARM_MTK_ARCH_CPUIDLE
 	select DEVAPC_LEGACY
+	select MTK_AVB20_SUPPORT
 	help
 	  This enables support for MediaTek MT6761. Highly power-efficient,
 	  performance-oriented 4G LTE processor for premium,
@@ -166,6 +169,7 @@ config MACH_MT6765
 	select PINCTRL
 	select MFD_SYSCON
 	select KERNEL_MODE_NEON
+	select MTK_BASE_POWER if !MTK_GKI_COMPAT
 	select MTK_GIC_V3_EXT
 	select MTK_SYSIRQ
 	select MTK_TIMER
@@ -180,6 +184,8 @@ config MACH_MT6765
 	select MTK_GIC_TARGET_ALL
 	select FAST_CIRQ_CLONE_FLUSH
 	select MTK_DEBUG_LATCH
+	select MTK_DFD_INTERNAL_DUMP
+	select MTK_DBGTOP
 	select MTK_PLAT_SRAM_FLAG
 	select MTK_L2C_PARITY_CHECK
 	select MTK_SYSTRACKER_V2
@@ -187,6 +193,10 @@ config MACH_MT6765
 	select CRYPTO_SHA2_ARM_CE
 	select CRYPTO_AES_ARM_CE
 	select MTK_PMQOS
+	select MTK_LM_MODE if !MTK_GMO_RAM_OPTIMIZE
+	select DEVAPC_LEGACY
+	select MTK_SECURITY_SW_SUPPORT
+	select MTK_AVB20_SUPPORT
 	help
 	  This enables support for MediaTek MT6765
 	  Highly power-efficient, performance-oriented 4G LTE processor
@@ -203,6 +213,15 @@ config MACH_MT6779
 	select MTK_BASE_POWER if !MTK_GKI_COMPAT
 	select MTK_DFD_INTERNAL_DUMP
 	select MTK_DBGTOP
+	select MTK_LM_MODE if !MTK_GMO_RAM_OPTIMIZE
+	select MTK_GIC_TARGET_ALL
+	select MTK_LASTBUS_INTERFACE
+	select DEVMPU_MT6779
+	select MTK_GIC_V3_EXT
+	select MTK_SYS_CIRQ
+	select FAST_CIRQ_CLONE_FLUSH
+	select MTK_SECURITY_SW_SUPPORT
+	select MTK_AVB20_SUPPORT
 	help
 	  This enables support for MediaTek MT6779. Highly power-efficient,
 	  performance-oriented 4G LTE processor for premium,

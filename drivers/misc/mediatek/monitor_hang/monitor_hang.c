@@ -53,7 +53,7 @@
 #include <mrdump.h>
 
 #ifndef TASK_STATE_TO_CHAR_STR
-#define TASK_STATE_TO_CHAR_STR "RSDTtXZxKWPNn"
+#define TASK_STATE_TO_CHAR_STR "RSDTtZXxKWPNn"
 #endif
 
 #ifdef CONFIG_MTK_HANG_DETECT_DB
@@ -63,6 +63,7 @@ static int MaxHangInfoSize = MAX_HANG_INFO_SIZE;
 char *Hang_Info;
 static int Hang_Info_Size;
 static bool watchdog_thread_exist;
+static bool system_server_exist;
 #endif
 
 static bool Hang_Detect_first;
@@ -542,7 +543,8 @@ void trigger_hang_detect_db(void)
 
 #ifdef CONFIG_MTK_AEE_IPANIC
 	aee_rr_rec_hang_detect_timeout_count(hd_timeout);
-	if (watchdog_thread_exist == false && reboot_flag == false)
+	if ((!watchdog_thread_exist & system_server_exist)
+		&& reboot_flag == false)
 		aee_rr_rec_hang_detect_timeout_count(COUNT_ANDROID_REBOOT);
 #endif
 
@@ -810,6 +812,8 @@ void show_thread_info(struct task_struct *p, bool dump_bt)
 #ifdef	CONFIG_MTK_HANG_DETECT_DB
 	if (!strcmp(p->comm, "watchdog"))
 		watchdog_thread_exist = true;
+	if (!strcmp(p->comm, "system_server"))
+		system_server_exist = true;
 #endif
 
 #ifdef CONFIG_STACKTRACE
@@ -1653,41 +1657,55 @@ static void show_bt_by_pid(int task_pid)
 #endif
 	int count = 0, dump_native = 0;
 	unsigned int state = 0;
-
+	char stat_nam[] = TASK_STATE_TO_CHAR_STR;
 	pid = find_get_pid(task_pid);
 	t = p = get_pid_task(pid, PIDTYPE_PID);
-
-	if (p && try_get_task_stack(p)) {
-		Log2HangInfo("%s: %d: %s.\n", __func__, task_pid, t->comm);
-		hang_log("%s: %d: %s.\n", __func__, task_pid, t->comm);
+	if (p != NULL) {
+		if (try_get_task_stack(p)) {
+			Log2HangInfo("%s: %d: %s.\n", __func__, task_pid, t->comm);
+			hang_log("%s: %d: %s.\n", __func__, task_pid, t->comm);
 #ifndef __aarch64__	 /* 32bit */
-		if (!strcmp(t->comm, "system_server"))
-			dump_native = 1;
-		else
-			dump_native = 0;
-#else
-		user_ret = task_pt_regs(t);
-
-		if (!user_mode(user_ret)) {
-			pr_info(" %s,%d:%s,fail in user_mode", __func__,
-					task_pid, t->comm);
-			dump_native = 0;
-		} else	if (!t->mm) {
-			pr_info(" %s,%d:%s, current_task->mm == NULL", __func__,
-					task_pid, t->comm);
-			dump_native = 0;
-		} else if (compat_user_mode(user_ret)) {
-			/* K64_U32 for check reg */
 			if (!strcmp(t->comm, "system_server"))
 				dump_native = 1;
 			else
 				dump_native = 0;
-		} else
-			dump_native = 1;
+#else
+			user_ret = task_pt_regs(t);
+
+			if (!user_mode(user_ret)) {
+				pr_info(" %s,%d:%s,fail in user_mode", __func__,
+						task_pid, t->comm);
+				dump_native = 0;
+			} else	if (!t->mm) {
+				pr_info(" %s,%d:%s, current_task->mm == NULL", __func__,
+						task_pid, t->comm);
+				dump_native = 0;
+			} else if (compat_user_mode(user_ret)) {
+				/* K64_U32 for check reg */
+				if (!strcmp(t->comm, "system_server"))
+					dump_native = 1;
+				else
+					dump_native = 0;
+			} else
+				dump_native = 1;
 #endif
-		if (dump_native == 1)
-			/* catch maps to Userthread_maps */
-			DumpThreadNativeMaps(task_pid, p);
+			if (dump_native == 1)
+				/* catch maps to Userthread_maps */
+				DumpThreadNativeMaps(task_pid, p);
+#ifdef MODULE
+			Pput_task_stack(t);
+#else
+			put_task_stack(p);
+#endif
+		} else {
+			state = p->state ? __ffs(p->state) + 1 : 0;
+			Log2HangInfo("%s pid %d state %c, flags %d. stack is null.\n",
+				t->comm, task_pid, state < sizeof(stat_nam) - 1 ?
+				stat_nam[state] : '?', t->flags);
+			hang_log("%s pid %d state %c, flags %d. stack is null.\n",
+				t->comm, task_pid, state < sizeof(stat_nam) - 1 ?
+				stat_nam[state] : '?', t->flags);
+		}
 		do {
 			if (t && try_get_task_stack(t)) {
 				pid_t tid = 0;
@@ -1716,18 +1734,7 @@ static void show_bt_by_pid(int task_pid)
 				msleep(20);
 			Log2HangInfo("-\n");
 		} while_each_thread(p, t);
-#ifdef MODULE
-		Pput_task_stack(t);
-#else
-		put_task_stack(p);
-#endif
 		put_task_struct(p);
-	} else if (p) {
-		put_task_struct(p);
-		Log2HangInfo("%s pid %d state %ld, flags %d. stack is null.\n",
-			t->comm, task_pid, t->state, t->flags);
-		hang_log("%s pid %d state %ld, flags %d. stack is null.\n",
-			t->comm, task_pid, t->state, t->flags);
 	}
 	put_pid(pid);
 }
@@ -1739,6 +1746,7 @@ static void hang_dump_backtrace(void)
 
 #ifdef CONFIG_MTK_HANG_DETECT_DB
 	watchdog_thread_exist = false;
+	system_server_exist = false;
 #endif
 	Log2HangInfo("dump backtrace start: %llu\n", local_clock());
 

@@ -149,7 +149,7 @@ int pd_hal_get_adapter_cap(struct chg_alg_device *alg, struct pd_power_cap *cap)
 {
 	struct mtk_pd *pd;
 	struct pd_hal *hal;
-	struct adapter_power_cap acap;
+	struct adapter_power_cap acap = {0};
 	int i, ret;
 
 	if (alg == NULL) {
@@ -290,7 +290,7 @@ int pd_hal_get_charger_cnt(struct chg_alg_device *alg)
 bool pd_hal_is_chip_enable(struct chg_alg_device *alg, enum chg_idx chgidx)
 {
 	struct pd_hal *hal;
-	bool is_chip_enable;
+	bool is_chip_enable = false;
 
 	if (alg == NULL)
 		return -EINVAL;
@@ -604,7 +604,7 @@ int pd_hal_charger_enable_chip(struct chg_alg_device *alg,
 int pd_hal_get_uisoc(struct chg_alg_device *alg)
 {
 	union power_supply_propval prop;
-	struct power_supply *bat_psy = NULL;
+	static struct power_supply *bat_psy = NULL;
 	int ret;
 	struct mtk_pd *pd;
 
@@ -612,8 +612,11 @@ int pd_hal_get_uisoc(struct chg_alg_device *alg)
 		return -EINVAL;
 
 	pd = dev_get_drvdata(&alg->dev);
-	bat_psy = devm_power_supply_get_by_phandle(&pd->pdev->dev,
+	if (bat_psy == NULL) {
+		bat_psy = devm_power_supply_get_by_phandle(&pd->pdev->dev,
 						       "gauge");
+		pr_notice("%sdevm_power_supply_get_by_phandle:%d\n", __func__, sizeof(bat_psy));
+	}
 	if (IS_ERR_OR_NULL(bat_psy)) {
 		pr_notice("%s Couldn't get bat_psy\n", __func__);
 		ret = 50;

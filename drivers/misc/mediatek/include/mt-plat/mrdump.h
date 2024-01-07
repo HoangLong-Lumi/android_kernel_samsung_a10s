@@ -197,11 +197,6 @@ struct mrdump_mini_elf_header {
 	struct mrdump_mini_elf_note misc[MRDUMP_MINI_NR_MISC];
 };
 
-struct mrdump_rsvmem_block {
-	phys_addr_t start_addr;
-	phys_addr_t size;
-};
-
 
 #define MRDUMP_MINI_HEADER_SIZE	\
 	ALIGN(sizeof(struct mrdump_mini_elf_header), PAGE_SIZE)
@@ -214,7 +209,6 @@ void __mrdump_create_oops_dump(enum AEE_REBOOT_MODE reboot_mode,
 		struct pt_regs *regs, const char *msg, ...);
 void mrdump_save_ctrlreg(int cpu);
 void mrdump_save_per_cpu_reg(int cpu, struct pt_regs *regs);
-extern const char *mrdump_get_cmd(void);
 
 int mrdump_common_die(int fiq_step, int reboot_reason, const char *msg,
 		      struct pt_regs *regs);

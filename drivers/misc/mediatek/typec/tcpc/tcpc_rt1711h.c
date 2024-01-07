@@ -33,7 +33,7 @@
 
 /* #define DEBUG_GPIO	66 */
 
-#define RT1711H_DRV_VERSION	"2.0.2_MTK"
+#define RT1711H_DRV_VERSION	"2.0.3_MTK"
 
 #define RT1711H_IRQ_WAKE_TIME	(500) /* ms */
 
@@ -583,7 +583,7 @@ static int rt1711_init_alert(struct tcpc_device *tcpc)
 
 	kthread_init_worker(&chip->irq_worker);
 	chip->irq_worker_task = kthread_run(kthread_worker_fn,
-			&chip->irq_worker, chip->tcpc_desc->name);
+			&chip->irq_worker, "%s", chip->tcpc_desc->name);
 	if (IS_ERR(chip->irq_worker_task)) {
 		pr_err("Error: Could not create tcpc task\n");
 		goto init_alert_err;
@@ -594,8 +594,7 @@ static int rt1711_init_alert(struct tcpc_device *tcpc)
 
 	pr_info("IRQF_NO_THREAD Test\r\n");
 	ret = request_irq(chip->irq, rt1711_intr_handler,
-		IRQF_TRIGGER_FALLING | IRQF_NO_THREAD |
-		IRQF_NO_SUSPEND, name, chip);
+		IRQF_TRIGGER_FALLING | IRQF_NO_THREAD, name, chip);
 	if (ret < 0) {
 		pr_err("Error: failed to request irq%d (gpio = %d, ret = %d)\n",
 			chip->irq, chip->irq_gpio, ret);
@@ -656,6 +655,10 @@ static int rt1711h_set_clock_gating(struct tcpc_device *tcpc_dev,
 	}
 
 	if (en) {
+		ret = rt1711_alert_status_clear(tcpc_dev,
+			TCPC_REG_ALERT_RX_STATUS |
+			TCPC_REG_ALERT_RX_HARD_RST |
+			TCPC_REG_ALERT_RX_BUF_OVF);
 		ret = rt1711_alert_status_clear(tcpc_dev,
 			TCPC_REG_ALERT_RX_STATUS |
 			TCPC_REG_ALERT_RX_HARD_RST |
@@ -755,6 +758,7 @@ static int rt1711_tcpc_init(struct tcpc_device *tcpc, bool sw_reset)
 
 	rt1711_i2c_write8(tcpc, RT1711H_REG_CONFIG_GPIO0, 0x80);
 
+	/* For BIST, Change Transition Toggle Counter (Noise) from 3 to 7 */
 	rt1711_i2c_write8(tcpc, RT1711H_REG_PHY_CTRL1,
 		RT1711H_REG_PHY_CTRL1_SET(retry_discard_old, 7, 0, 1));
 
@@ -954,7 +958,7 @@ static int rt1711_set_cc(struct tcpc_device *tcpc, int pull)
 {
 	int ret;
 	uint8_t data;
-	int rp_lvl = TYPEC_CC_PULL_GET_RP_LVL(pull);
+	int rp_lvl = TYPEC_CC_PULL_GET_RP_LVL(pull), pull1, pull2;
 
 	RT1711_INFO("\n");
 	pull = TYPEC_CC_PULL_GET_RES(pull);
@@ -975,7 +979,17 @@ static int rt1711_set_cc(struct tcpc_device *tcpc, int pull)
 			rt1711h_init_cc_params(tcpc, TYPEC_CC_VOLT_SNK_DFT);
 #endif	/* CONFIG_USB_POWER_DELIVERY */
 
-		data = TCPC_V10_REG_ROLE_CTRL_RES_SET(0, rp_lvl, pull, pull);
+		pull1 = pull2 = pull;
+
+		if ((pull == TYPEC_CC_RP_DFT || pull == TYPEC_CC_RP_1_5 ||
+			pull == TYPEC_CC_RP_3_0) &&
+			tcpc->typec_is_attached_src) {
+			if (tcpc->typec_polarity)
+				pull1 = TYPEC_CC_OPEN;
+			else
+				pull2 = TYPEC_CC_OPEN;
+		}
+		data = TCPC_V10_REG_ROLE_CTRL_RES_SET(0, rp_lvl, pull1, pull2);
 		ret = rt1711_i2c_write8(tcpc, TCPC_V10_REG_ROLE_CTRL, data);
 	}
 
@@ -1136,12 +1150,14 @@ static int rt1711_set_rx_enable(struct tcpc_device *tcpc, uint8_t enable)
 	if (ret == 0)
 		ret = rt1711_i2c_write8(tcpc, TCPC_V10_REG_RX_DETECT, enable);
 
-	if ((ret == 0) && (!enable))
-		ret = rt1711h_set_clock_gating(tcpc, true);
-
-	/* For testing */
-	if (!enable)
+	if ((ret == 0) && (!enable)) {
+		/*
+		 * do protocal reset to prevent rx sop intterupt
+		 * before set clock gating in detach flow
+		 */
 		rt1711_protocol_reset(tcpc);
+		ret = rt1711h_set_clock_gating(tcpc, true);
+	}
 
 	return ret;
 }
@@ -1293,15 +1309,16 @@ static struct tcpc_ops rt1711_tcpc_ops = {
 static int rt_parse_dt(struct rt1711_chip *chip, struct device *dev)
 {
 	struct device_node *np = NULL;
-	int ret;
+	int ret = 0;
 
 	pr_info("%s\n", __func__);
 
-	np = of_find_node_by_name(NULL, "type_c_port0");
+	np = of_find_node_by_name(NULL, "rt1711_type_c_port0");
 	if (!np) {
-		pr_notice("%s find node type_c_port0 fail\n", __func__);
+		pr_notice("%s find node rt1711_type_c_port0 fail\n", __func__);
 		return -ENODEV;
 	}
+	dev->of_node = np;
 
 #if (!defined(CONFIG_MTK_GPIO) || defined(CONFIG_MTK_GPIOLIB_STAND))
 	ret = of_get_named_gpio(np, "rt1711pd,intr_gpio", 0);
@@ -1316,7 +1333,7 @@ static int rt_parse_dt(struct rt1711_chip *chip, struct device *dev)
 	if (ret < 0)
 		pr_err("%s no intr_gpio info\n", __func__);
 #endif
-	return ret;
+	return ret < 0 ? ret : 0;
 }
 
 /*
@@ -1369,17 +1386,11 @@ static void check_printk_performance(void)
 static int rt1711_tcpcdev_init(struct rt1711_chip *chip, struct device *dev)
 {
 	struct tcpc_desc *desc;
-	struct device_node *np = NULL;
+	struct device_node *np = dev->of_node;
 	u32 val, len;
 	const char *name = "default";
 
 	dev_info(dev, "%s\n", __func__);
-
-	np = of_find_node_by_name(NULL, "type_c_port0");
-	if (!np) {
-		dev_notice(dev, "%s find node type_c_port0 fail\n", __func__);
-		return -ENODEV;
-	}
 
 	desc = devm_kzalloc(dev, sizeof(*desc), GFP_KERNEL);
 	if (!desc)
@@ -1431,7 +1442,10 @@ static int rt1711_tcpcdev_init(struct rt1711_chip *chip, struct device *dev)
 	}
 #endif	/* CONFIG_TCPC_VCONN_SUPPLY_MODE */
 
-	of_property_read_string(np, "rt-tcpc,name", (char const **)&name);
+	if (of_property_read_string(np, "rt-tcpc,name",
+				(char const **)&name) < 0) {
+		dev_info(dev, "use default name\n");
+	}
 
 	len = strlen(name);
 	desc->name = kzalloc(len+1, GFP_KERNEL);
@@ -1542,9 +1556,11 @@ static int rt1711_i2c_probe(struct i2c_client *client,
 	if (!chip)
 		return -ENOMEM;
 
-	if (use_dt)
-		rt_parse_dt(chip, &client->dev);
-	else {
+	if (use_dt) {
+		ret = rt_parse_dt(chip, &client->dev);
+		if (ret < 0)
+			return ret;
+	} else {
 		dev_err(&client->dev, "no dts node\n");
 		return -ENODEV;
 	}
@@ -1710,7 +1726,7 @@ static int __init rt1711_init(void)
 {
 	struct device_node *np;
 
-	pr_info("rt1711h_init (%s): initializing...\n", RT1711H_DRV_VERSION);
+	pr_info("%s (%s): initializing...\n", __func__, RT1711H_DRV_VERSION);
 	np = of_find_node_by_name(NULL, "usb_type_c");
 	if (np != NULL)
 		pr_info("usb_type_c node found...\n");
@@ -1733,6 +1749,9 @@ MODULE_DESCRIPTION("RT1711 TCPC Driver");
 MODULE_VERSION(RT1711H_DRV_VERSION);
 
 /**** Release Note ****
+ * 2.0.3_MTK
+ * (1) Single Rp as Attatched.SRC for Ellisys TD.4.9.4
+ *
  * 2.0.2_MTK
  * (1) Replace wake_lock with wakeup_source
  * (2) Move down the shipping off
@@ -1741,5 +1760,5 @@ MODULE_VERSION(RT1711H_DRV_VERSION);
  * (5) Add get_alert_mask of tcpc_ops
  *
  * 2.0.1_MTK
- *	First released PD3.0 Driver on MTK platform
+ * First released PD3.0 Driver on MTK platform
  */

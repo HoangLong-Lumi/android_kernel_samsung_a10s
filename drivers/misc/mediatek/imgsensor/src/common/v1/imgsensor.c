@@ -14,7 +14,7 @@
 #include <linux/workqueue.h>
 #include <linux/init.h>
 #include <linux/types.h>
-
+#include <linux/hardware_info.h>
 #undef CONFIG_MTK_SMI_EXT
 #ifdef CONFIG_MTK_SMI_EXT
 #include "mmdvfs_mgr.h"
@@ -48,6 +48,8 @@
 #include "imgsensor_clk.h"
 #include "imgsensor.h"
 
+int current_sensor_id = 0xffff;//bug 612420,huangguoyong.wt,add,2020/12/23,add for n6 camera bring up
+
 #define PDAF_DATA_SIZE 4096
 
 #ifdef CONFIG_MTK_SMI_EXT
@@ -59,7 +61,7 @@ static int current_mmsys_clk = MMSYS_CLK_MEDIUM;
 /* #define CONFIG_CAM_TEMPERATURE_WORKQUEUE */
 #ifdef CONFIG_CAM_TEMPERATURE_WORKQUEUE
 static void cam_temperature_report_wq_routine(struct work_struct *);
-	struct delayed_work cam_temperature_wq;
+struct delayed_work cam_temperature_wq;
 #endif
 
 #define FEATURE_CONTROL_MAX_DATA_SIZE 128000
@@ -80,6 +82,8 @@ struct mutex imgsensor_mutex;
 
 
 DEFINE_MUTEX(pinctrl_mutex);
+DEFINE_MUTEX(oc_mutex);
+extern int hardwareinfo_set_prop(int cmd, const char *name);
 
 /************************************************************************
  * Profiling
@@ -409,6 +413,12 @@ imgsensor_sensor_close(struct IMGSENSOR_SENSOR *psensor)
 
 		psensor_func->psensor_inst = psensor_inst;
 
+		//+bug 612420,huangguoyong.wt,add,2021/01/20. fixed regulator val setting issue
+		if (pgimgsensor->imgsensor_oc_irq_enable != NULL)
+			pgimgsensor->imgsensor_oc_irq_enable(
+			    psensor->inst.sensor_idx, false);
+		//-bug 612420,huangguoyong.wt,add,2021/01/20. fixed regulator val setting issue
+
 		ret = psensor_func->SensorClose();
 		if (ret != ERROR_NONE) {
 			PK_DBG(" [%s]error : %d\n", __func__, ret);
@@ -456,7 +466,12 @@ static inline int imgsensor_check_is_alive(struct IMGSENSOR_SENSOR *psensor)
 		PK_DBG("Fail to get sensor ID %x\n", sensorID);
 		err = ERROR_SENSOR_CONNECT_FAIL;
 	} else {
-		PK_DBG(" Sensor found ID = 0x%x\n", sensorID);
+		pr_info(" Sensor found ID = 0x%x\n", sensorID);
+                //+OA6649409,zhouyikuan.wt,ADD,2020/10/10,distinguish 6st&7st depth camera tuning file
+                if(N8_S5K3L6_HLT_SENSOR_ID == sensorID ||N8_HI1336_TXD_JCT_SENSOR_ID == sensorID ||N8_HI1336_XL_JCT_SENSOR_ID == sensorID){
+                    current_sensor_id = sensorID;
+                }
+                //-OA6649409,zhouyikuan.wt,ADD,2020/10/10,distinguish 6st&7st depth camera tuning file
 		err = ERROR_NONE;
 	}
 
@@ -497,8 +512,8 @@ int imgsensor_set_driver(struct IMGSENSOR_SENSOR *psensor)
 
 	imgsensor_mutex_init(psensor_inst);
 	imgsensor_i2c_init(&psensor_inst->i2c_cfg,
-	   imgsensor_custom_config[psensor->inst.sensor_idx].i2c_dev);
-
+	imgsensor_custom_config[
+	(unsigned int)psensor_inst->sensor_idx].i2c_dev);
 	imgsensor_i2c_filter_msg(&psensor_inst->i2c_cfg, true);
 
 	if (get_search_list) {
@@ -789,10 +804,43 @@ static void cam_temperature_report_wq_routine(
 
 }
 #endif
-
+//+bug 612420,zhanghao2.wt,add,2021/1/6,add n6 camera factory message
+struct match_hardwareinfo hardwareinfo_camera_name[] = {
+        {SENSOR_DRVNAME_N8_HI1336_XL_MIPI_RAW, "hi1336_xinli_CME010QR-C", "0x1336"},
+        {SENSOR_DRVNAME_N8_HI1336_TXD_MIPI_RAW, "hi1336_tongxingda_TABH28A", "0x1337"},
+        {SENSOR_DRVNAME_N8_S5K3L6_HLT_MIPI_RAW, "s5k3l6_helitai_HHT5036A", "0x30c6"},
+        {SENSOR_DRVNAME_N8_HI846_SHT_MIPI_RAW, "hi846_shengtai_9M807B", "0x0846"},
+        {SENSOR_DRVNAME_N8_HI846_LY_MIPI_RAW, "hi846_lianyi_LE8235FM", "0x0846"},
+        {SENSOR_DRVNAME_N8_GC2375H_HLT_MIPI_RAW, "gc2375h_helitai_HKU1083", "0x2375"},
+        {SENSOR_DRVNAME_N8_GC2375A_QH_MIPI_RAW, "gc2375a_qunhui_GDA6451B1S-0P0J0", "0x23a5"},
+        {SENSOR_DRVNAME_N8_GC8034_TXD_MIPI_RAW, "gc8034_tongxingda_TY8G21A", "0x8044"},
+        {SENSOR_DRVNAME_N8_BF2253_QH_MIPI_RAW, "bf2253_qunhui_BA6530B1S-0P0J0", "0x2253"},
+        {SENSOR_DRVNAME_N8_BF2253_QH_6_MIPI_RAW, "bf2253_qunhui_BA6530B1S-0P0J0", "0x2258"},
+        {SENSOR_DRVNAME_N8_BF2253_QH_7_MIPI_RAW, "bf2253_qunhui_BA6530B1S-0P0J0", "0x2259"},
+        {SENSOR_DRVNAME_N8_HI1336_TXD_JCT_MIPI_RAW, "hi1336_tongxingda_TABH28B", "0x1338"},
+        {SENSOR_DRVNAME_N8_HI1336_XL_JCT_MIPI_RAW, "hi1336_xinli_CME565-B13BA-E", "0x1339"},
+        //+bug 621775,lintaicheng, add, 20210207, add for n21 camera bring up
+        {SENSOR_DRVNAME_N21_HLT_MAIN_OV16B10_MIPI_RAW, "OV16B10", "helitai"},
+        {SENSOR_DRVNAME_N21_TXD_SUB_S5K3L6_MIPI_RAW, "S5K3L6", "tongxingda"},
+        {SENSOR_DRVNAME_N21_CXT_DEPTH_GC2375H_MIPI_RAW, "GC2375H_DEPTH", "chengxiangtong"},
+        //-bug 621775,lintaicheng, add, 20210207, add for n21 camera bring up
+        //+bug 621775,liuxiangyin, mod, 20210207, for n21 n21_cxt_micro_gc2375h camera bringup
+        {SENSOR_DRVNAME_N21_TXD_MAIN_S5K2P6_MIPI_RAW, "S5K2P6SQ", "tongxingda"},
+        {SENSOR_DRVNAME_N21_SHINE_SUB_HI1336_MIPI_RAW, "HI1336", "shengtai"},
+        {SENSOR_DRVNAME_N21_SHINE_WIDE_GC8034W_MIPI_RAW, "GC8034W", "shengtai"},
+        {SENSOR_DRVNAME_N21_HLT_WIDE_GC8034W_MIPI_RAW, "GC8034W", "helitai"},
+        {SENSOR_DRVNAME_N21_CXT_DEPTH_GC02M1B_MIPI_RAW, "GC02M1B_DEPTH", "chengxiangtong"},
+        {SENSOR_DRVNAME_N21_HLT_DEPTH_GC2375H_MIPI_RAW, "GC2375H_DEPTH", "helitai"},
+        {SENSOR_DRVNAME_N21_HLT_MICRO_GC2375H_MIPI_RAW, "GC2375H_MACRO", "helitai"},
+        {SENSOR_DRVNAME_N21_CXT_MICRO_GC2375H_MIPI_RAW, "GC2375H_MACRO", "chengxiangtong"},
+        //-bug 621775,liuxiangyin, mod, 20210207, for n21 n21_cxt_micro_gc2375h camera bringup
+        {"NULL", "UNKNOWN", 0},
+};
+//-bug 612420,zhanghao2.wt,add,2021/1/6,add n6 camera factory message
 static inline int adopt_CAMERA_HW_GetInfo2(void *pBuf)
 {
 	int ret = 0;
+        int i = 0;
 	struct IMAGESENSOR_GETINFO_STRUCT *pSensorGetInfo;
 	struct IMGSENSOR_SENSOR    *psensor;
 
@@ -1075,7 +1123,37 @@ static inline int adopt_CAMERA_HW_GetInfo2(void *pBuf)
 				"\n\nCAM_Info[%d]:%s;",
 				pSensorGetInfo->SensorId,
 				psensor->inst.psensor_name);
-
+//+bug 612420,zhanghao2.wt,add,2021/1/6,add n6 camera factory message
+        for(i = 0; strcmp(hardwareinfo_camera_name[i].psensor_name, "NULL"); i++){
+                if(!strcmp(hardwareinfo_camera_name[i].psensor_name, psensor->inst.psensor_name)){
+                    break;
+                }
+        }
+        pr_info("i = %d, hardwareinfo_camera_name:%s, psensor->inst.psensor_name:%s, sensor_idx:%s",
+                i, hardwareinfo_camera_name[i].psensor_name, psensor->inst.psensor_name, hardwareinfo_camera_name[i].sensor_id);
+        if(pSensorGetInfo->SensorId == 0){
+                hardwareinfo_set_prop(HARDWARE_BACK_CAM,hardwareinfo_camera_name[i].hardwareinfo_set_name);
+                hardwareinfo_set_prop(HARDWARE_BACK_CAM_MOUDULE_ID, hardwareinfo_camera_name[i].sensor_id);          //set back camera sensor id
+        }
+        if(pSensorGetInfo->SensorId == 1){
+                hardwareinfo_set_prop(HARDWARE_FRONT_CAM,hardwareinfo_camera_name[i].hardwareinfo_set_name);
+                hardwareinfo_set_prop(HARDWARE_FRONT_CAM_MOUDULE_ID, hardwareinfo_camera_name[i].sensor_id);     //set front camera sensor id
+        }
+        if(pSensorGetInfo->SensorId == 2){
+                hardwareinfo_set_prop(HARDWARE_BACK_SUB_CAM,hardwareinfo_camera_name[i].hardwareinfo_set_name);
+                hardwareinfo_set_prop(HARDWARE_BACK_SUBCAM_MOUDULE_ID, hardwareinfo_camera_name[i].sensor_id);   //set sub back camera sensor id
+        }
+//-bug 612420,zhanghao2.wt,add,2021/1/6,add n6 camera factory message
+        //+bug 621775,liuxiangyin, mod, 20210206, for n21 hlt_depth_gc2375h and hlt_micro_gc2375h camera bringup
+        if(pSensorGetInfo->SensorId == 3){
+                hardwareinfo_set_prop(HARDWARE_WIDE_ANGLE_CAM,hardwareinfo_camera_name[i].hardwareinfo_set_name);
+                hardwareinfo_set_prop(HARDWARE_WIDE_ANGLE_CAM_MOUDULE_ID, hardwareinfo_camera_name[i].sensor_id);	  //set wide back camera sensor id
+        }
+	 if(pSensorGetInfo->SensorId == 4){
+		 hardwareinfo_set_prop(HARDWARE_MACRO_CAM,hardwareinfo_camera_name[i].hardwareinfo_set_name);
+		 hardwareinfo_set_prop(HARDWARE_MACRO_CAM_MOUDULE_ID, hardwareinfo_camera_name[i].sensor_id);	  //set micro back camera sensor id
+	 }
+        //-bug 621775,liuxiangyin, mod, 20210206, for n21 hlt_depth_gc2375h and hlt_micro_gc2375h camera bringup
 	pmtk_ccm_name = strchr(mtk_ccm_name, '\0');
 	snprintf(pmtk_ccm_name,
 		camera_info_size - (int)(pmtk_ccm_name - mtk_ccm_name),
@@ -1208,6 +1286,147 @@ static inline int adopt_CAMERA_HW_Control(void *pBuf)
 	return ret;
 } /* adopt_CAMERA_HW_Control */
 
+static inline int check_length_of_para(
+	enum ACDK_SENSOR_FEATURE_ENUM FeatureId, unsigned int length)
+{
+	int ret = 0;
+
+	switch (FeatureId) {
+	case SENSOR_FEATURE_OPEN:
+	case SENSOR_FEATURE_CLOSE:
+	case SENSOR_FEATURE_CHECK_IS_ALIVE:
+		break;
+	case SENSOR_FEATURE_SET_DRIVER:
+	case SENSOR_FEATURE_GET_LENS_DRIVER_ID:
+	case SENSOR_FEATURE_SET_FRAMERATE:
+	case SENSOR_FEATURE_SET_HDR:
+	case SENSOR_FEATURE_SET_PDAF:
+	{
+		if (length != 4)
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_ESHUTTER:
+	case SENSOR_FEATURE_SET_GAIN:
+	case SENSOR_FEATURE_SET_I2C_BUF_MODE_EN:
+	case SENSOR_FEATURE_SET_SHUTTER_BUF_MODE:
+	case SENSOR_FEATURE_SET_GAIN_BUF_MODE:
+	case SENSOR_FEATURE_SET_VIDEO_MODE:
+	case SENSOR_FEATURE_SET_AF_WINDOW:
+	case SENSOR_FEATURE_SET_AUTO_FLICKER_MODE:
+	case SENSOR_FEATURE_GET_EV_AWB_REF:
+	case SENSOR_FEATURE_GET_SHUTTER_GAIN_AWB_GAIN:
+	case SENSOR_FEATURE_GET_EXIF_INFO:
+	case SENSOR_FEATURE_GET_DELAY_INFO:
+	case SENSOR_FEATURE_SET_TEST_PATTERN:
+	case SENSOR_FEATURE_GET_TEST_PATTERN_CHECKSUM_VALUE:
+	case SENSOR_FEATURE_SET_OB_LOCK:
+	case SENSOR_FEATURE_SET_SENSOR_OTP_AWB_CMD:
+	case SENSOR_FEATURE_SET_SENSOR_OTP_LSC_CMD:
+	case SENSOR_FEATURE_GET_TEMPERATURE_VALUE:
+	case SENSOR_FEATURE_GET_AE_FLASHLIGHT_INFO:
+	case SENSOR_FEATURE_GET_TRIGGER_FLASHLIGHT_INFO:
+	case SENSOR_FEATURE_SET_YUV_3A_CMD:
+	case SENSOR_FEATURE_SET_STREAMING_SUSPEND:
+	case SENSOR_FEATURE_SET_STREAMING_RESUME:
+	case SENSOR_FEATURE_GET_PERIOD:
+	case SENSOR_FEATURE_GET_PIXEL_CLOCK_FREQ:
+	{
+		if (length != 8)
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_DUAL_GAIN:
+	case SENSOR_FEATURE_SET_YUV_CMD:
+	case SENSOR_FEATURE_GET_AE_AWB_LOCK_INFO:
+	case SENSOR_FEATURE_SET_MAX_FRAME_RATE_BY_SCENARIO:
+	case SENSOR_FEATURE_GET_DEFAULT_FRAME_RATE_BY_SCENARIO:
+	case SENSOR_FEATURE_GET_CROP_INFO:
+	case SENSOR_FEATURE_GET_VC_INFO:
+	case SENSOR_FEATURE_GET_PDAF_INFO:
+	case SENSOR_FEATURE_GET_SENSOR_PDAF_CAPACITY:
+	case SENSOR_FEATURE_GET_SENSOR_HDR_CAPACITY:
+	case SENSOR_FEATURE_SET_SHUTTER_FRAME_TIME:
+	case SENSOR_FEATURE_SET_PDFOCUS_AREA:
+	case SENSOR_FEATURE_GET_PDAF_REG_SETTING:
+	case SENSOR_FEATURE_SET_PDAF_REG_SETTING:
+	{
+		if (length != 16)
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_IHDR_SHUTTER_GAIN:
+	case SENSOR_FEATURE_SET_HDR_SHUTTER:
+	case SENSOR_FEATURE_GET_PDAF_DATA:
+	case SENSOR_FEATURE_GET_4CELL_DATA:
+	case SENSOR_FEATURE_GET_MIPI_PIXEL_RATE:
+	case SENSOR_FEATURE_GET_PIXEL_RATE:
+	{
+		if (length != 24)
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_SENSOR_SYNC:
+	case SENSOR_FEATURE_SET_ESHUTTER_GAIN:
+	{
+		if (length != 32)
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_CALIBRATION_DATA:
+	{
+		if (length !=
+			sizeof(struct SET_SENSOR_CALIBRATION_DATA_STRUCT))
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_AWB_GAIN:
+	{
+		if (length !=
+			sizeof(struct SET_SENSOR_AWB_GAIN))
+			ret = -EFAULT;
+	}
+		break;
+	case SENSOR_FEATURE_SET_REGISTER:
+	case SENSOR_FEATURE_GET_REGISTER:
+	{
+
+		if (length !=
+			sizeof(MSDK_SENSOR_REG_INFO_STRUCT))
+			ret = -EFAULT;
+	}
+		break;
+	/* begin of legacy feature control; Do nothing */
+	case SENSOR_FEATURE_SET_ISP_MASTER_CLOCK_FREQ:
+	case SENSOR_FEATURE_SET_CCT_REGISTER:
+	case SENSOR_FEATURE_SET_ENG_REGISTER:
+	case SENSOR_FEATURE_SET_ITEM_INFO:
+	case SENSOR_FEATURE_GET_ITEM_INFO:
+	case SENSOR_FEATURE_GET_ENG_INFO:
+	case SENSOR_FEATURE_MOVE_FOCUS_LENS:
+	case SENSOR_FEATURE_SET_AE_WINDOW:
+	case SENSOR_FEATURE_SET_MIN_MAX_FPS:
+	case SENSOR_FEATURE_GET_RESOLUTION:
+	case SENSOR_FEATURE_GET_REGISTER_DEFAULT:
+	case SENSOR_FEATURE_GET_CONFIG_PARA:
+	case SENSOR_FEATURE_GET_GROUP_COUNT:
+	case SENSOR_FEATURE_CAMERA_PARA_TO_SENSOR:
+	case SENSOR_FEATURE_SENSOR_TO_CAMERA_PARA:
+	case SENSOR_FEATURE_SINGLE_FOCUS_MODE:
+	case SENSOR_FEATURE_CANCEL_AF:
+	case SENSOR_FEATURE_CONSTANT_AF:
+	/* end of legacy feature control */
+	default:
+		break;
+	}
+	if (ret != 0)
+		pr_err(
+			"check length failed, feature ctrl id = %d, length = %d\n",
+			FeatureId,
+			length);
+	return ret;
+} /* adopt_CAMERA_HW_Control */
+
 /************************************************************************
  * adopt_CAMERA_HW_FeatureControl
  ************************************************************************/
@@ -1250,8 +1469,13 @@ static inline int adopt_CAMERA_HW_FeatureControl(void *pBuf)
 			PK_DBG(" ioctl copy from user failed\n");
 			return -EFAULT;
 		}
-		if (FeatureParaLen > FEATURE_CONTROL_MAX_DATA_SIZE)
+		if (!FeatureParaLen ||
+			FeatureParaLen > FEATURE_CONTROL_MAX_DATA_SIZE)
 			return -EINVAL;
+		ret = check_length_of_para(pFeatureCtrl->FeatureId,
+							FeatureParaLen);
+		if (ret != 0)
+			return ret;
 
 		pFeaturePara = kmalloc(FeatureParaLen, GFP_KERNEL);
 		if (pFeaturePara == NULL)
@@ -1339,6 +1563,7 @@ static inline int adopt_CAMERA_HW_FeatureControl(void *pBuf)
 	case SENSOR_FEATURE_GET_SENSOR_PDAF_CAPACITY:
 	case SENSOR_FEATURE_GET_SENSOR_HDR_CAPACITY:
 	case SENSOR_FEATURE_GET_MIPI_PIXEL_RATE:
+	case SENSOR_FEATURE_GET_OFFSET_TO_START_OF_EXPOSURE:
 	case SENSOR_FEATURE_GET_PIXEL_RATE:
 	case SENSOR_FEATURE_SET_PDAF:
 	case SENSOR_FEATURE_SET_SHUTTER_FRAME_TIME:
@@ -2063,6 +2288,7 @@ static inline int adopt_CAMERA_HW_FeatureControl(void *pBuf)
 	case SENSOR_FEATURE_GET_SENSOR_PDAF_CAPACITY:
 	case SENSOR_FEATURE_GET_SENSOR_HDR_CAPACITY:
 	case SENSOR_FEATURE_GET_MIPI_PIXEL_RATE:
+	case SENSOR_FEATURE_GET_OFFSET_TO_START_OF_EXPOSURE:
 	case SENSOR_FEATURE_GET_PIXEL_RATE:
 	case SENSOR_FEATURE_SET_ISO:
 	case SENSOR_FEATURE_SET_PDAF:
@@ -2424,7 +2650,8 @@ static long imgsensor_ioctl(
 				i4RetValue =  -EFAULT;
 				goto CAMERA_HW_Ioctl_EXIT;
 			}
-		}
+		} else
+			memset(pBuff, 0, _IOC_SIZE(a_u4Command));
 	} else {
 		i4RetValue =  -EFAULT;
 		goto CAMERA_HW_Ioctl_EXIT;
@@ -2656,7 +2883,7 @@ static int imgsensor_probe(struct platform_device *pdev)
 {
 	/* Register char driver */
 	if (imgsensor_driver_register()) {
-		PK_DBG("[CAMERA_HW] register char device failed!\n");
+		pr_err("[CAMERA_HW] register char device failed!\n");
 		return -1;
 	}
 

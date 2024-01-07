@@ -396,6 +396,7 @@ static struct SV_LOG_STR gSvLog[DPE_IRQ_TYPE_AMOUNT];
 	unsigned int *ptr2 = &gSvLog[irq]._cnt[ppb][logT]; \
 	unsigned int str_leng; \
 	unsigned int logi; \
+	int ret; \
 	struct SV_LOG_STR *pSrc = &gSvLog[irq]; \
 	if (logT == _LOG_ERR) { \
 		str_leng = NORMAL_STR_LEN*ERR_PAGE; \
@@ -410,8 +411,11 @@ static struct SV_LOG_STR gSvLog[DPE_IRQ_TYPE_AMOUNT];
 	(char *)&(gSvLog[irq]._str[ppb][logT][gSvLog[irq]._cnt[ppb][logT]]); \
 	avaLen = str_leng - 1 - gSvLog[irq]._cnt[ppb][logT]; \
 	if (avaLen > 1) { \
-		snprintf((char *)(pDes), avaLen, fmt, \
+		ret = snprintf((char *)(pDes), avaLen, fmt, \
 			##__VA_ARGS__); \
+		if (ret < 0) { \
+			LOG_ERR("snprintf fail(%d)\n", ret); \
+		} \
 		if ('\0' != gSvLog[irq]._str[ppb][logT][str_leng - 1]) { \
 			LOG_ERR("log str over flow(%d)", irq); \
 		} \
@@ -464,7 +468,10 @@ if (pSrc->_cnt[ppb][logT] != 0) { \
 	ptr = pDes = \
 		(char *)&(pSrc->_str[ppb][logT][pSrc->_cnt[ppb][logT]]); \
 	ptr2 = &(pSrc->_cnt[ppb][logT]);\
-	snprintf((char *)(pDes), avaLen, fmt, ##__VA_ARGS__); \
+	ret = snprintf((char *)(pDes), avaLen, fmt, ##__VA_ARGS__); \
+	if (ret < 0) { \
+		LOG_ERR("snprintf fail(%d)\n", ret); \
+	} \
 	while (*ptr++ != '\0') { \
 		(*ptr2)++; \
 	} \
@@ -476,8 +483,8 @@ if (pSrc->_cnt[ppb][logT] != 0) { \
 	struct SV_LOG_STR *pSrc = &gSvLog[irq]; \
 	char *ptr; \
 	unsigned int i; \
-	signed int ppb = 0; \
-	signed int logT = 0; \
+	unsigned int ppb = 0; \
+	unsigned int logT = 0; \
 	if (ppb_in > 1) { \
 		ppb = 1; \
 	} else { \
@@ -2613,7 +2620,7 @@ static signed int DPE_WaitIrq(struct DPE_WAIT_IRQ_STRUCT *WaitIrq)
 			DPEInfo.IrqInfo.Status[WaitIrq->Type] &=
 			(~WaitIrq->Status);
 
-			spin_unlock_irqrestore
+		spin_unlock_irqrestore
 			(&(DPEInfo.SpinLockIrq[WaitIrq->Type]), flags);
 	} else if (WaitIrq->Clear == DPE_IRQ_CLEAR_ALL) {
 		spin_lock_irqsave(&(DPEInfo.SpinLockIrq[WaitIrq->Type]), flags);
@@ -3846,49 +3853,6 @@ EXIT:
 	return 0;
 }
 
-static signed int DPE_mmap(
-	struct file *pFile, struct vm_area_struct *pVma)
-{
-	unsigned long length = 0;
-	unsigned int pfn = 0x0;
-
-	length = pVma->vm_end - pVma->vm_start;
-	/*  */
-	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
-	pfn = pVma->vm_pgoff << PAGE_SHIFT;
-
-
-	LOG_INF("DPE mmap: pVma->vm_pgoff(0x%lx)", pVma->vm_pgoff);
-	LOG_INF("DPE mmap: pfn(0x%x),phy(0x%lx)",
-		pfn, pVma->vm_pgoff << PAGE_SHIFT);
-	LOG_INF("pVmapVma->vm_start(0x%lx)", pVma->vm_start);
-	LOG_INF("pVma->vm_end(0x%lx),length(0x%lx)", pVma->vm_end, length);
-
-	switch (pfn) {
-	case DPE_BASE_HW:
-	if (length > DPE_REG_RANGE) {
-		LOG_INF("mmap range error :module:0x%x length(0x%lx)",
-		pfn,
-		length);
-		LOG_INF("mmap range error :DPE_REG_RANGE(0x%x)!",
-		DPE_REG_RANGE);
-
-		return -EAGAIN;
-	}
-	break;
-	default:
-		LOG_INF("Illegal starting HW addr for mmap!");
-		return -EAGAIN;
-	}
-	if (remap_pfn_range
-		(pVma, pVma->vm_start, pVma->vm_pgoff,
-		pVma->vm_end - pVma->vm_start, pVma->vm_page_prot)) {
-		return -EAGAIN;
-	}
-	/*  */
-	return 0;
-}
-
 static dev_t DPEDevNo;
 static struct cdev *pDPECharDrv;
 static struct class *pDPEClass;
@@ -3898,7 +3862,7 @@ static const struct file_operations DPEFileOper = {
 	.open = DPE_open,
 	.release = DPE_release,
 	/* .flush   = mt_DPE_flush, */
-	.mmap = DPE_mmap,
+	/* .mmap = DPE_mmap, */
 	.unlocked_ioctl = DPE_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = DPE_ioctl_compat,
@@ -4450,7 +4414,7 @@ static ssize_t dpe_reg_write(
 	size_t count, loff_t *data)
 {
 	char desc[128];
-	int len = 0;
+	unsigned int len = 0;
 	/*char *pEnd;*/
 	char addrSzBuf[24];
 	char valSzBuf[24];

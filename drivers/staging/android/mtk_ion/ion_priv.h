@@ -102,9 +102,16 @@ struct ion_device {
 	long (*custom_ioctl)(struct ion_client *client, unsigned int cmd,
 			     unsigned long arg);
 	struct rb_root clients;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *debug_root;
 	struct dentry *heaps_debug_root;
 	struct dentry *clients_debug_root;
+#endif
+#if IS_ENABLED(CONFIG_PROC_FS)
+	struct proc_dir_entry *proc_root;
+	struct proc_dir_entry *heaps_proc_root;
+	struct proc_dir_entry *clients_proc_root;
+#endif
 	int heap_cnt;
 };
 
@@ -135,7 +142,12 @@ struct ion_client {
 	int display_serial;
 	struct task_struct *task;
 	pid_t pid;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *debug_root;
+#endif
+#if IS_ENABLED(CONFIG_PROC_FS)
+	struct proc_dir_entry *proc_root;
+#endif
 	char dbg_name[ION_MM_DBG_NAME_LEN]; /* add by K for debug! */
 };
 
@@ -158,6 +170,7 @@ struct ion_handle_debug {
  */
 struct ion_handle {
 	struct kref ref;
+	unsigned int user_ref_count;
 	struct ion_client *client;
 	struct ion_buffer *buffer;
 	struct rb_node node;
@@ -490,8 +503,6 @@ void ion_free_nolock(struct ion_client *client, struct ion_handle *handle);
 
 int ion_handle_put_nolock(struct ion_handle *handle);
 
-struct ion_handle *ion_handle_get_by_id(struct ion_client *client, int id);
-
 int ion_handle_put(struct ion_handle *handle);
 
 int ion_query_heaps(struct ion_client *client, struct ion_heap_query *query);
@@ -504,4 +515,15 @@ extern struct device *g_iommu_device;
 #endif
 
 extern atomic64_t page_sz_cnt;
+
+int ion_share_dma_buf_fd_nolock(struct ion_client *client,
+				struct ion_handle *handle);
+
+struct ion_handle *pass_to_user(struct ion_handle *handle);
+void user_ion_free_nolock(struct ion_client *client, struct ion_handle *handle);
+
+struct ion_handle *__ion_alloc(struct ion_client *client, size_t len,
+			       size_t align, unsigned int heap_id_mask,
+			       unsigned int flags, bool grab_handle);
+
 #endif /* _ION_PRIV_H */

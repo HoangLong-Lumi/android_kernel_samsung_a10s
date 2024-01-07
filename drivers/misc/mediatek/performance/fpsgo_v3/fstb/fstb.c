@@ -25,7 +25,6 @@
 #include "fpsgo_sysfs.h"
 #include "fstb.h"
 #include "fstb_usedext.h"
-#include "../fbt/include/fbt_fteh.h"
 #include "fpsgo_usedext.h"
 
 
@@ -45,8 +44,9 @@
 
 #define fpsgo_systrace_c_fstb_man(pid, val, fmt...) \
 	fpsgo_systrace_c(FPSGO_DEBUG_MANDATORY, pid, val, fmt)
-static struct kobject *fstb_kobj;
 
+
+static struct kobject *fstb_kobj;
 static int max_fps_limit = DEFAULT_DFPS;
 static int dfps_ceiling = DEFAULT_DFPS;
 static int min_fps_limit = CFG_MIN_FPS_LIMIT;
@@ -57,13 +57,13 @@ static long long ADJUST_INTERVAL_US = 1000000;
 static int margin_mode;
 static int margin_mode_dbnc_a = 9;
 static int margin_mode_dbnc_b = 1;
+static int JUMP_CHECK_NUM = DEFAULT_JUMP_CHECK_NUM;
 
 static void fstb_fps_stats(struct work_struct *work);
 static DECLARE_WORK(fps_stats_work,
 		(void *) fstb_fps_stats);
 static HLIST_HEAD(fstb_frame_infos);
 static HLIST_HEAD(fstb_render_target_fps);
-static HLIST_HEAD(fstb_fteh_list);
 
 static struct hrtimer hrt;
 static struct workqueue_struct *wq;
@@ -157,7 +157,7 @@ int fpsgo_ctrl2fstb_gblock(int tid, int start)
 		return 0;
 	}
 
-	fpsgo_systrace_c_fstb(tid, start, "gblock");
+	fpsgo_systrace_c_fstb(tid, 0, start, "gblock");
 
 	/* end */
 	if (!start && iter->gblock_b)
@@ -183,7 +183,7 @@ int fpsgo_ctrl2fstb_switch_fstb(int enable)
 	}
 
 	fstb_enable = enable;
-	fpsgo_systrace_c_fstb(-200, fstb_enable, "fstb_enable");
+	fpsgo_systrace_c_fstb(-200, 0, fstb_enable, "fstb_enable");
 
 	mtk_fstb_dprintk_always("%s %d\n", __func__, fstb_enable);
 	if (!fstb_enable) {
@@ -212,7 +212,7 @@ int fpsgo_ctrl2fstb_switch_fstb(int enable)
 
 static void switch_fstb_active(void)
 {
-	fpsgo_systrace_c_fstb(-200,
+	fpsgo_systrace_c_fstb(-200, 0,
 			fstb_active, "fstb_active");
 
 	mtk_fstb_dprintk_always("%s %d\n",
@@ -270,6 +270,19 @@ int switch_margin_mode_dbnc_b(int val)
 	return 0;
 }
 
+int switch_jump_check_num(int val)
+{
+	if (val < 1 || val > JUMP_VOTE_MAX_I)
+		return -EINVAL;
+
+	mutex_lock(&fstb_lock);
+	if (val != JUMP_CHECK_NUM)
+		JUMP_CHECK_NUM = val;
+	mutex_unlock(&fstb_lock);
+
+	return 0;
+}
+
 int switch_fps_range(int nr_level, struct fps_level *level)
 {
 	if (nr_level != 1)
@@ -279,91 +292,6 @@ int switch_fps_range(int nr_level, struct fps_level *level)
 		return 0;
 	else
 		return 1;
-}
-
-int fpsgo_fbt2fstb_query_fteh_list(int tid)
-{
-	struct FSTB_FTEH_LIST *iter;
-	struct task_struct *tsk, *gtsk;
-	char proc_name[16], thrd_name[16];
-	int ret = 0;
-
-	rcu_read_lock();
-	tsk = find_task_by_vpid(tid);
-	if (tsk) {
-		get_task_struct(tsk);
-		gtsk = find_task_by_vpid(tsk->tgid);
-		if (!strncpy(thrd_name, tsk->comm, 16)) {
-			put_task_struct(tsk);
-			goto out;
-		}
-		put_task_struct(tsk);
-		if (gtsk) {
-			get_task_struct(gtsk);
-			if (!strncpy(proc_name, gtsk->comm, 16)) {
-				put_task_struct(gtsk);
-				goto out;
-			}
-			put_task_struct(gtsk);
-		} else
-			goto out;
-	} else
-		goto out;
-	rcu_read_unlock();
-
-	hlist_for_each_entry(iter, &fstb_fteh_list, hlist) {
-		if (!strncmp(proc_name, iter->process_name,
-				strlen(iter->process_name)) &&
-			!strncmp(thrd_name, iter->thread_name,
-				strlen(iter->thread_name))) {
-			ret = 1;
-			break;
-		}
-	}
-
-	return ret;
-
-out:
-	rcu_read_unlock();
-	return ret;
-}
-
-#define MAX_FTEH_LENGTH 20
-static int fteh_list_length;
-int set_fteh_list(char *proc_name,
-	char *thrd_name)
-{
-	struct FSTB_FTEH_LIST *new_fteh_list;
-
-	if (fteh_list_length >= MAX_FTEH_LENGTH)
-		return -ENOMEM;
-
-	new_fteh_list =
-		kzalloc(sizeof(*new_fteh_list), GFP_KERNEL);
-	if (new_fteh_list == NULL)
-		return -ENOMEM;
-
-	if (!strncpy(
-				new_fteh_list->process_name,
-				proc_name, 16)) {
-		kfree(new_fteh_list);
-		return -ENOMEM;
-	}
-
-	if (!strncpy(
-				new_fteh_list->thread_name,
-				thrd_name, 16)) {
-		kfree(new_fteh_list);
-		return -ENOMEM;
-	}
-
-	hlist_add_head(&new_fteh_list->hlist,
-			&fstb_fteh_list);
-
-	fteh_list_length++;
-
-	return 0;
-
 }
 
 static int switch_redner_fps_range(char *proc_name,
@@ -494,7 +422,8 @@ void fpsgo_ctrl2fstb_dfrc_fps(int fps)
 {
 	mutex_lock(&fstb_lock);
 
-	if (fps <= CFG_MAX_FPS_LIMIT && fps >= CFG_MIN_FPS_LIMIT) {
+	if (fps <= CFG_MAX_FPS_LIMIT && fps >= CFG_MIN_FPS_LIMIT &&
+		nr_fps_levels >= 1) {
 		dfps_ceiling = fps;
 		max_fps_limit = min(dfps_ceiling,
 				fps_levels[0].start);
@@ -593,7 +522,7 @@ void gpu_time_update(long long t_gpu, unsigned int cur_freq,
 				cur_max_freq);
 		iter->weighted_gpu_time_ts[iter->weighted_gpu_time_end] =
 			cur_time_us;
-		fpsgo_systrace_c_fstb_man(iter->pid,
+		fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid,
 		(int)iter->weighted_gpu_time[iter->weighted_gpu_time_end],
 		"weighted_gpu_time");
 		iter->weighted_gpu_time_end++;
@@ -604,9 +533,11 @@ void gpu_time_update(long long t_gpu, unsigned int cur_freq,
 	cur_time_us, ktime_to_us(ktime_get())-cur_time_us,
 	t_gpu, cur_freq, cur_max_freq);
 
-	fpsgo_systrace_c_fstb_man(iter->pid, (int)t_gpu, "t_gpu");
-	fpsgo_systrace_c_fstb(iter->pid, (int)cur_freq, "cur_gpu_cap");
-	fpsgo_systrace_c_fstb(iter->pid, (int)cur_max_freq, "max_gpu_cap");
+	fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid, (int)t_gpu, "t_gpu");
+	fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
+			(int)cur_freq, "cur_gpu_cap");
+	fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
+			(int)cur_max_freq, "max_gpu_cap");
 
 	mutex_unlock(&fstb_lock);
 }
@@ -647,12 +578,13 @@ static int get_gpu_frame_time(struct FSTB_FRAME_INFO *iter)
 	} else
 		ret = -1;
 
-	fpsgo_systrace_c_fstb_man(iter->pid, ret, "quantile_weighted_gpu_time");
+	fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid, ret,
+			"quantile_weighted_gpu_time");
 	return ret;
 
 }
 
-void (*eara_thrm_frame_start_fp)(int pid,
+void (*eara_thrm_frame_start_fp)(int pid, unsigned long long bufID,
 	int cpu_time, int vpu_time, int mdla_time,
 	int cpu_cap, int vpu_cap, int mdla_cap,
 	int queuefps, unsigned long long q2q_time,
@@ -661,6 +593,7 @@ void (*eara_thrm_frame_start_fp)(int pid,
 
 int fpsgo_fbt2fstb_update_cpu_frame_info(
 		int pid,
+		unsigned long long bufID,
 		int tgid,
 		int frame_type,
 		unsigned long long Q2Q_time,
@@ -694,7 +627,7 @@ int fpsgo_fbt2fstb_update_cpu_frame_info(
 	}
 
 	hlist_for_each_entry(iter, &fstb_frame_infos, hlist) {
-		if (iter->pid == pid)
+		if (iter->pid == pid && iter->bufid == bufID)
 			break;
 	}
 
@@ -761,18 +694,21 @@ int fpsgo_fbt2fstb_update_cpu_frame_info(
 	} else
 		wct = cpu_time_ns;
 
-	fpsgo_systrace_c_fstb_man(pid, (int)wct, "weighted_cpu_time");
+	fpsgo_systrace_c_fstb_man(pid, iter->bufid, (int)wct,
+		"weighted_cpu_time");
 
 	if (vpu_time_ns && vpu_boost > 0 && vpu_boost <= VPU_MAX_CAP) {
 		wvt = vpu_time_ns * vpu_boost;
 		do_div(wvt, VPU_MAX_CAP);
-		fpsgo_systrace_c_fstb_man(pid, (int)wvt, "weighted_vpu_time");
+		fpsgo_systrace_c_fstb_man(pid, iter->bufid, (int)wvt,
+			"weighted_vpu_time");
 	}
 
 	if (mdla_time_ns && mdla_boost > 0 && mdla_boost <= MDLA_MAX_CAP) {
 		wmt = mdla_time_ns * mdla_boost;
 		do_div(wmt, MDLA_MAX_CAP);
-		fpsgo_systrace_c_fstb_man(pid, (int)wmt, "weighted_mdla_time");
+		fpsgo_systrace_c_fstb_man(pid, iter->bufid, (int)wmt,
+			"weighted_mdla_time");
 	}
 
 	iter->weighted_cpu_time[iter->weighted_cpu_time_end] =
@@ -794,28 +730,37 @@ int fpsgo_fbt2fstb_update_cpu_frame_info(
 	iter->m_m_time = (iter->m_m_time + mdla_time_ns) / 2;
 	iter->m_m_cap = (iter->m_m_cap + mdla_boost) / 2;
 
-	fpsgo_systrace_c_fstb_man(pid, (int)cpu_time_ns, "t_cpu");
-	fpsgo_systrace_c_fstb(pid, (int)max_current_cap, "cur_cpu_cap");
-	fpsgo_systrace_c_fstb(pid, (int)max_cpu_cap, "max_cpu_cap");
+	fpsgo_systrace_c_fstb_man(pid, iter->bufid, (int)cpu_time_ns, "t_cpu");
+	fpsgo_systrace_c_fstb(pid, iter->bufid, (int)max_current_cap,
+			"cur_cpu_cap");
+	fpsgo_systrace_c_fstb(pid, iter->bufid, (int)max_cpu_cap,
+			"max_cpu_cap");
 
 	if (mid) {
-		fpsgo_systrace_c_fstb_man(pid, (int)vpu_time_ns, "t_vpu");
-		fpsgo_systrace_c_fstb(pid, (int)vpu_boost, "cur_vpu_cap");
-		fpsgo_systrace_c_fstb_man(pid, (int)mdla_time_ns, "t_mdla");
-		fpsgo_systrace_c_fstb(pid, (int)mdla_boost, "cur_mdla_cap");
-		fpsgo_systrace_c_fstb(pid, (int)iter->m_c_time,
+		fpsgo_systrace_c_fstb_man(pid, iter->bufid, (int)vpu_time_ns,
+			"t_vpu");
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)vpu_boost,
+			"cur_vpu_cap");
+		fpsgo_systrace_c_fstb_man(pid, iter->bufid, (int)mdla_time_ns,
+			"t_mdla");
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)mdla_boost,
+			"cur_mdla_cap");
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)iter->m_c_time,
 			"avg_cpu_time");
-		fpsgo_systrace_c_fstb(pid, (int)iter->m_c_cap, "avg_cpu_cap");
-		fpsgo_systrace_c_fstb(pid, (int)iter->m_v_time,
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)iter->m_c_cap,
+			"avg_cpu_cap");
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)iter->m_v_time,
 			"avg_vpu_time");
-		fpsgo_systrace_c_fstb(pid, (int)iter->m_v_cap, "avg_vpu_cap");
-		fpsgo_systrace_c_fstb(pid, (int)iter->m_m_time,
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)iter->m_v_cap,
+			"avg_vpu_cap");
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)iter->m_m_time,
 			"avg_mdla_time");
-		fpsgo_systrace_c_fstb(pid, (int)iter->m_m_cap, "avg_mdla_cap");
+		fpsgo_systrace_c_fstb(pid, iter->bufid, (int)iter->m_m_cap,
+			"avg_mdla_cap");
 	}
 
 	if (eara_thrm_frame_start_fp) {
-		eara_thrm_frame_start_fp(pid, (int)Runnging_time,
+		eara_thrm_frame_start_fp(pid, bufID, (int)Runnging_time,
 			(int)vpu_time_ns, (int)mdla_time_ns, Curr_cap,
 			vpu_boost, mdla_boost, iter->queue_fps,
 			Q2Q_time, 0, 0,
@@ -826,9 +771,10 @@ int fpsgo_fbt2fstb_update_cpu_frame_info(
 	return 0;
 }
 
-void (*eara_thrm_enqueue_end_fp)(int pid, int gpu_time, int gpu_freq,
-	unsigned long long enq);
-int fpsgo_comp2fstb_enq_end(int pid, unsigned long long enq)
+void (*eara_thrm_enqueue_end_fp)(int pid, unsigned long long bufID,
+	int gpu_time, int gpu_freq, unsigned long long enq);
+int fpsgo_comp2fstb_enq_end(int pid, unsigned long long bufID,
+		unsigned long long enq)
 {
 	struct FSTB_FRAME_INFO *iter;
 
@@ -840,7 +786,7 @@ int fpsgo_comp2fstb_enq_end(int pid, unsigned long long enq)
 	}
 
 	hlist_for_each_entry(iter, &fstb_frame_infos, hlist) {
-		if (iter->pid == pid)
+		if (iter->pid == pid && iter->bufid == bufID)
 			break;
 	}
 
@@ -850,7 +796,7 @@ int fpsgo_comp2fstb_enq_end(int pid, unsigned long long enq)
 	}
 
 	if (eara_thrm_enqueue_end_fp)
-		eara_thrm_enqueue_end_fp(pid,
+		eara_thrm_enqueue_end_fp(pid, bufID,
 			iter->gpu_time, iter->gpu_freq, enq);
 
 	mutex_unlock(&fstb_lock);
@@ -894,7 +840,8 @@ static long long get_cpu_frame_time(struct FSTB_FRAME_INFO *iter)
 	} else
 		ret = -1;
 
-	fpsgo_systrace_c_fstb_man(iter->pid, ret, "quantile_weighted_cpu_time");
+	fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid, ret,
+		"quantile_weighted_cpu_time");
 	return ret;
 
 }
@@ -912,7 +859,7 @@ void fpsgo_comp2fstb_camera_active(int pid)
 	mutex_unlock(&fstb_cam_active_time);
 
 	mtk_fstb_dprintk("camera_api pid %d\n", pid);
-	fpsgo_systrace_c_fstb(pid, pid, "camera_active");
+	fpsgo_systrace_c_fstb(pid, 0, pid, "camera_active");
 }
 
 static void fstb_set_cam_active(int active)
@@ -934,9 +881,53 @@ static void fstb_check_cam_status(void)
 	mutex_unlock(&fstb_cam_active_time);
 }
 
-void fpsgo_comp2fstb_queue_time_update(int pid,
+static int fstb_get_queue_fps2(struct FSTB_FRAME_INFO *iter)
+{
+	unsigned long long retval = 0;
+	unsigned long long duration = 0;
+
+
+	duration =
+		iter->queue_time_ts[iter->queue_time_end - 1] -
+		iter->queue_time_ts[iter->queue_time_end - JUMP_CHECK_NUM];
+	do_div(duration, JUMP_CHECK_NUM - 1);
+
+	retval = 1000000000ULL;
+	do_div(retval, duration);
+
+	return (int)retval;
+}
+
+
+static int calculate_fps_limit(struct FSTB_FRAME_INFO *iter, int target_fps);
+
+static int mode(int a[], int n)
+{
+	int maxValue = 0, maxCount = 0, i, j;
+
+	for (i = 0; i < n; ++i) {
+		int count = 0;
+
+		for (j = 0; j < n; ++j) {
+			if (a[j] == a[i])
+				++count;
+		}
+
+		if (count > maxCount) {
+			maxCount = count;
+			maxValue = a[i];
+		}
+	}
+
+	if (maxCount)
+		return maxValue;
+	else
+		return a[n-1];
+}
+
+void fpsgo_comp2fstb_queue_time_update(int pid, unsigned long long bufID,
 	int frame_type, unsigned long long ts,
-	unsigned long long bufferid, int api)
+	int api)
 {
 	struct FSTB_FRAME_INFO *iter;
 	ktime_t cur_time;
@@ -959,7 +950,7 @@ void fpsgo_comp2fstb_queue_time_update(int pid,
 	cur_time_us = ktime_to_us(cur_time);
 
 	hlist_for_each_entry(iter, &fstb_frame_infos, hlist) {
-		if (iter->pid == pid)
+		if (iter->pid == pid && iter->bufid == bufID)
 			break;
 	}
 
@@ -978,7 +969,7 @@ void fpsgo_comp2fstb_queue_time_update(int pid,
 		new_frame_info->target_fps_margin_dbnc_a = margin_mode_dbnc_a;
 		new_frame_info->target_fps_margin_dbnc_b = margin_mode_dbnc_b;
 		new_frame_info->queue_fps = max_fps_limit;
-		new_frame_info->bufid = bufferid;
+		new_frame_info->bufid = bufID;
 		new_frame_info->queue_time_begin = 0;
 		new_frame_info->queue_time_end = 0;
 		new_frame_info->weighted_cpu_time_begin = 0;
@@ -994,6 +985,8 @@ void fpsgo_comp2fstb_queue_time_update(int pid,
 		new_frame_info->m_m_cap = 0;
 		new_frame_info->gblock_b = 0ULL;
 		new_frame_info->gblock_time = 0ULL;
+		new_frame_info->fps_raise_flag = 0;
+		new_frame_info->vote_i = 0;
 
 		rcu_read_lock();
 		tsk = find_task_by_vpid(pid);
@@ -1008,6 +1001,7 @@ void fpsgo_comp2fstb_queue_time_update(int pid,
 
 		if (gtsk) {
 			strncpy(new_frame_info->proc_name, gtsk->comm, 16);
+			new_frame_info->proc_name[15] = '\0';
 			put_task_struct(gtsk);
 		} else {
 			new_frame_info->proc_name[0] = '\0';
@@ -1015,8 +1009,6 @@ void fpsgo_comp2fstb_queue_time_update(int pid,
 
 		iter = new_frame_info;
 		hlist_add_head(&iter->hlist, &fstb_frame_infos);
-	} else {
-		iter->bufid = bufferid;
 	}
 
 	if (iter->queue_time_begin < 0 ||
@@ -1057,6 +1049,50 @@ void fpsgo_comp2fstb_queue_time_update(int pid,
 	iter->queue_time_ts[iter->queue_time_end] = ts;
 	iter->queue_time_end++;
 
+	if (!JUMP_CHECK_NUM)
+		goto out;
+
+	if (iter->queue_time_end - iter->queue_time_begin >= JUMP_CHECK_NUM) {
+		int tmp_q_fps = fstb_get_queue_fps2(iter);
+		int tmp_target_fps = iter->target_fps;
+		int tmp_vote_fps = iter->target_fps;
+
+		fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid, tmp_q_fps,
+			"tmp_q_fps");
+
+		if (tmp_q_fps >= iter->target_fps +
+			iter->target_fps_margin2) {
+			tmp_target_fps =
+				calculate_fps_limit(iter, tmp_q_fps);
+		}
+
+		if (iter->vote_i < JUMP_VOTE_MAX_I) {
+			iter->vote_fps[iter->vote_i] = tmp_target_fps;
+			iter->vote_i++;
+		} else {
+			memmove(iter->vote_fps,
+			&(iter->vote_fps[JUMP_VOTE_MAX_I - JUMP_CHECK_NUM + 1]),
+			sizeof(int) * (JUMP_CHECK_NUM - 1));
+			iter->vote_i = JUMP_CHECK_NUM - 1;
+			iter->vote_fps[iter->vote_i] = tmp_target_fps;
+			iter->vote_i++;
+		}
+
+		if (iter->vote_i >= JUMP_CHECK_NUM) {
+			tmp_vote_fps =
+			mode(
+			&(iter->vote_fps[iter->vote_i - JUMP_CHECK_NUM]),
+			JUMP_CHECK_NUM);
+			fpsgo_main_trace("fstb_vote_target_fps %d",
+			tmp_vote_fps);
+		}
+
+		if (tmp_vote_fps > iter->target_fps) {
+			iter->fps_raise_flag = 1;
+			iter->target_fps = tmp_vote_fps;
+		}
+	}
+
 out:
 	mutex_unlock(&fstb_lock);
 
@@ -1066,7 +1102,7 @@ out:
 	mutex_unlock(&fstb_fps_active_time);
 }
 
-static int fstb_get_queue_fps(struct FSTB_FRAME_INFO *iter,
+static int fstb_get_queue_fps1(struct FSTB_FRAME_INFO *iter,
 		long long interval)
 {
 	int i = iter->queue_time_begin, j;
@@ -1103,11 +1139,12 @@ static int fstb_get_queue_fps(struct FSTB_FRAME_INFO *iter,
 		do_div(retval, avg_frame_interval);
 		mtk_fstb_dprintk("%s  %d %llu\n",
 				__func__, iter->pid, retval);
-		fpsgo_systrace_c_fstb_man(iter->pid, (int)retval, "queue_fps");
+		fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid, (int)retval,
+			"queue_fps");
 		return retval;
 	}
 	mtk_fstb_dprintk("%s  %d %d\n", __func__, iter->pid, 0);
-	fpsgo_systrace_c_fstb_man(iter->pid, 0, "queue_fps");
+	fpsgo_systrace_c_fstb_man(iter->pid, iter->bufid, 0, "queue_fps");
 
 	return 0;
 }
@@ -1115,7 +1152,7 @@ static int fstb_get_queue_fps(struct FSTB_FRAME_INFO *iter,
 static int fps_update(struct FSTB_FRAME_INFO *iter)
 {
 	iter->queue_fps =
-		fstb_get_queue_fps(iter, FRAME_TIME_WINDOW_SIZE_US);
+		fstb_get_queue_fps1(iter, FRAME_TIME_WINDOW_SIZE_US);
 
 	return iter->queue_fps;
 }
@@ -1197,9 +1234,13 @@ static int calculate_fps_limit(struct FSTB_FRAME_INFO *iter, int target_fps)
 			iter->target_fps_margin = 0;
 		break;
 	case 2:
-		if (ret_fps >= max_fps_limit)
+		if (ret_fps >= max_fps_limit) {
 			iter->target_fps_margin = 0;
-		else if (asfc_turn) {
+			iter->target_fps_margin_dbnc_a =
+				margin_mode_dbnc_a;
+			iter->target_fps_margin_dbnc_b =
+				margin_mode_dbnc_b;
+		} else if (asfc_turn) {
 			if (iter->target_fps_margin_dbnc_a > 0) {
 				iter->target_fps_margin = 0;
 				iter->target_fps_margin_dbnc_a--;
@@ -1247,15 +1288,13 @@ static int calculate_fps_limit(struct FSTB_FRAME_INFO *iter, int target_fps)
 static int cal_target_fps(struct FSTB_FRAME_INFO *iter)
 {
 	long long target_limit = max_fps_limit;
-	unsigned long long tmp_target_limit = max_fps_limit;
 	int cur_cpu_time, cur_gpu_time;
-	long long cur_pipe_time;
 
 	cur_cpu_time = get_cpu_frame_time(iter);
 	cur_gpu_time = get_gpu_frame_time(iter);
 
 #if API_READY
-	if (iter->new_info == 0) {
+	{
 		struct pob_fpsgo_fpsstats_info pffi = {0};
 
 		pffi.quantile_weighted_cpu_time = cur_cpu_time;
@@ -1265,76 +1304,35 @@ static int cal_target_fps(struct FSTB_FRAME_INFO *iter)
 	}
 #endif
 
-	if (iter->new_info == 1) {
-		iter->new_info = 0;
-		target_limit = max_fps_limit;
+	if (iter->fps_raise_flag == 1) {
+		target_limit = iter->target_fps;
 		/*decrease*/
 	} else if (iter->target_fps - iter->queue_fps >
 			iter->target_fps * fps_error_threshold / 100) {
+#if API_READY
+		fpsgo_fstb2eara_notify_fps_bound();
+#endif
 
-		if (iter->queue_fps < iter->target_fps)
-			target_limit = iter->queue_fps;
-		else
-			target_limit = iter->target_fps;
-		fpsgo_systrace_c_fstb(iter->pid,
+		target_limit = iter->queue_fps;
+
+		fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
 				(int)target_limit, "tmp_target_limit");
-		/*increase*/
-	} else if (iter->queue_fps >=
-		iter->target_fps + iter->target_fps_margin2) {
-
-		tmp_target_limit = 1000000000LL;
-		cur_pipe_time = (long long)max(cur_cpu_time, cur_gpu_time);
-
-		if (cur_pipe_time > 0)
-			do_div(tmp_target_limit, cur_pipe_time);
-		else
-			tmp_target_limit = max_fps_limit;
-
-		fpsgo_systrace_c_fstb(iter->pid,
-				(int)tmp_target_limit, "tmp_target_limit");
-
-		if ((int)tmp_target_limit - iter->target_fps >
-				iter->target_fps * fps_error_threshold / 100) {
-			if (iter->target_fps >= 48)
-				target_limit = clamp((int)tmp_target_limit,
-						48, CFG_MAX_FPS_LIMIT);
-			else if (iter->target_fps >= 45)
-				target_limit = clamp((int)tmp_target_limit,
-						45, 48);
-			else if (iter->target_fps >= 36)
-				target_limit = clamp((int)tmp_target_limit,
-						36, 45);
-			else if (iter->target_fps > 30)
-				target_limit = clamp((int)tmp_target_limit,
-						30, 36);
-			else if (iter->target_fps == 30)
-				target_limit = 60;
-			else if (iter->target_fps >= 27)
-				target_limit = clamp((int)tmp_target_limit,
-						27, 30);
-			else if (iter->target_fps >= 24)
-				target_limit = clamp((int)tmp_target_limit,
-						24, 27);
-			else
-				target_limit = clamp((int)tmp_target_limit,
-						CFG_MIN_FPS_LIMIT, 24);
-
-		} else
-			target_limit = iter->target_fps;
-
-		/*stable state*/
 	} else {
 		target_limit = iter->target_fps;
 	}
+
+	iter->fps_raise_flag = 0;
 
 	return target_limit;
 
 }
 
-void (*eara_thrm_gblock_bypass_fp)(int pid, int bypass);
+void (*eara_thrm_gblock_bypass_fp)(int pid, unsigned long long bufid,
+					int bypass);
 #define FSTB_SEC_DIVIDER 1000000000
-void fpsgo_fbt2fstb_query_fps(int pid, int *target_fps,
-	int *target_cpu_time, int tgid, unsigned long long mid)
+void fpsgo_fbt2fstb_query_fps(int pid, unsigned long long bufID,
+	int *target_fps, int *target_cpu_time,
+	int tgid, unsigned long long mid)
 {
 	struct FSTB_FRAME_INFO *iter = NULL;
 	unsigned long long total_time, v_c_time;
@@ -1343,7 +1341,7 @@ void fpsgo_fbt2fstb_query_fps(int pid, int *target_fps,
 	mutex_lock(&fstb_lock);
 
 	hlist_for_each_entry(iter, &fstb_frame_infos, hlist) {
-		if (iter->pid == pid)
+		if (iter->pid == pid && iter->bufid == bufID)
 			break;
 	}
 
@@ -1369,15 +1367,16 @@ void fpsgo_fbt2fstb_query_fps(int pid, int *target_fps,
 
 		if (total_time > 1000000ULL + iter->gblock_time &&
 				iter->gblock_time > 1000000ULL) {
-			fpsgo_systrace_c_fstb(pid,
+			fpsgo_systrace_c_fstb(pid, iter->bufid,
 					iter->gblock_time, "gblock_time");
 			total_time -= iter->gblock_time;
-
 			if (eara_thrm_gblock_bypass_fp)
-				eara_thrm_gblock_bypass_fp(iter->pid, 1);
+				eara_thrm_gblock_bypass_fp(iter->pid,
+							iter->bufid, 1);
 		} else {
 			if (eara_thrm_gblock_bypass_fp)
-				eara_thrm_gblock_bypass_fp(iter->pid, 0);
+				eara_thrm_gblock_bypass_fp(iter->pid,
+							iter->bufid, 0);
 		}
 
 		iter->gblock_time = 0ULL;
@@ -1398,6 +1397,7 @@ static void fstb_fps_stats(struct work_struct *work)
 	int target_fps = max_fps_limit;
 	int idle = 1;
 	int fstb_active2xgf;
+	int max_target_fps = min_fps_limit;
 
 	if (work != &fps_stats_work)
 		kfree(work);
@@ -1419,16 +1419,19 @@ static void fstb_fps_stats(struct work_struct *work)
 
 			iter->target_fps =
 				calculate_fps_limit(iter, target_fps);
-			fpsgo_systrace_c_fstb_man(iter->pid,
+			iter->vote_i = 0;
+			fpsgo_systrace_c_fstb_man(iter->pid, 0,
 					dfps_ceiling, "dfrc");
-			fpsgo_systrace_c_fstb(iter->pid,
+			fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
+				iter->target_fps, "fstb_target_fps1");
+			fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
 				iter->target_fps_margin, "target_fps_margin");
-			fpsgo_systrace_c_fstb(iter->pid,
+			fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
 				iter->target_fps_margin2, "target_fps_margin2");
-			fpsgo_systrace_c_fstb(iter->pid,
+			fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
 				iter->target_fps_margin_dbnc_a,
 				"target_fps_margin_dbnc_a");
-			fpsgo_systrace_c_fstb(iter->pid,
+			fpsgo_systrace_c_fstb(iter->pid, iter->bufid,
 				iter->target_fps_margin_dbnc_b,
 				"target_fps_margin_dbnc_b");
 
@@ -1439,6 +1442,9 @@ static void fstb_fps_stats(struct work_struct *work)
 			"%s pid:%d target_fps:%d\n",
 			__func__, iter->pid,
 			iter->target_fps);
+
+			if (max_target_fps < iter->target_fps)
+				max_target_fps = iter->target_fps;
 			/* if queue fps == 0, we delete that frame_info */
 		} else {
 			hlist_del(&iter->hlist);
@@ -1446,6 +1452,7 @@ static void fstb_fps_stats(struct work_struct *work)
 			vfree(iter);
 		}
 	}
+
 
 	/* check idle twice to avoid fstb_active ping-pong */
 	if (idle)
@@ -1511,6 +1518,32 @@ static void reset_fps_level(void)
 
 	set_soft_fps_level(1, level);
 }
+
+static ssize_t jump_check_num_show(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", JUMP_CHECK_NUM);
+}
+
+static ssize_t jump_check_num_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	char acBuffer[FPSGO_SYSFS_MAX_BUFF_SIZE];
+	int arg;
+
+	if ((count > 0) && (count < FPSGO_SYSFS_MAX_BUFF_SIZE)) {
+		if (scnprintf(acBuffer, FPSGO_SYSFS_MAX_BUFF_SIZE, "%s", buf)) {
+			if (kstrtoint(acBuffer, 0, &arg) == 0)
+				switch_jump_check_num(arg);
+		}
+	}
+
+	return count;
+}
+
+static KOBJ_ATTR_RW(jump_check_num);
 
 static ssize_t fstb_soft_level_show(struct kobject *kobj,
 		struct kobj_attribute *attr,
@@ -1847,7 +1880,6 @@ static ssize_t fstb_tune_quantile_store(struct kobject *kobj,
 
 static KOBJ_ATTR_RW(fstb_tune_quantile);
 
-
 static ssize_t fstb_tune_error_threshold_show(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		char *buf)
@@ -1929,8 +1961,6 @@ static ssize_t fpsgo_status_show(struct kobject *kobj,
 		char *buf)
 {
 	struct FSTB_FRAME_INFO *iter;
-	int fteh_pid;
-	int fteh_state;
 	char temp[FPSGO_SYSFS_MAX_BUFF_SIZE];
 	int pos = 0;
 	int length;
@@ -1943,35 +1973,24 @@ static ssize_t fpsgo_status_show(struct kobject *kobj,
 	}
 
 	length = scnprintf(temp + pos, FPSGO_SYSFS_MAX_BUFF_SIZE - pos,
-	"tid\tname\t\tcurrentFPS\ttargetFPS\tFPS_margin\tfteh_list\n");
+	"tid\tbufID\tname\t\tcurrentFPS\ttargetFPS\tFPS_margin\n");
 	pos += length;
 
 	hlist_for_each_entry(iter, &fstb_frame_infos, hlist) {
 		length = scnprintf(temp + pos, FPSGO_SYSFS_MAX_BUFF_SIZE - pos,
-				"%d\t%s\t%d\t\t%d\t\t%d\t\t%d\n",
+				"%d\t0x%llx\t%s\t%d\t\t%d\t\t%d\n",
 				iter->pid,
+				iter->bufid,
 				iter->proc_name,
 				iter->queue_fps > max_fps_limit ?
 				max_fps_limit : iter->queue_fps,
 				iter->target_fps,
-				iter->target_fps_margin,
-				fpsgo_fbt2fstb_query_fteh_list(iter->pid));
+				iter->target_fps_margin);
 		pos += length;
 
 	}
 
 	mutex_unlock(&fstb_lock);
-
-	fteh_state = fpsgo_fteh_get_state(&fteh_pid);
-
-
-	length = scnprintf(temp + pos, FPSGO_SYSFS_MAX_BUFF_SIZE - pos,
-			"\nFTEH\tstate\tcur_pid\n");
-	pos += length;
-
-	length = scnprintf(temp + pos, FPSGO_SYSFS_MAX_BUFF_SIZE - pos,
-			"\t%d\t%d\n", fteh_state, fteh_pid);
-	pos += length;
 
 	length = scnprintf(temp + pos, FPSGO_SYSFS_MAX_BUFF_SIZE - pos,
 			"fstb_is_cam_active:%d\n", fstb_is_cam_active);
@@ -2018,8 +2037,9 @@ int mtk_fstb_init(void)
 				&kobj_attr_fstb_fps_list);
 		fpsgo_sysfs_create_file(fstb_kobj,
 				&kobj_attr_fstb_soft_level);
+		fpsgo_sysfs_create_file(fstb_kobj,
+				&kobj_attr_jump_check_num);
 	}
-
 
 	reset_fps_level();
 
@@ -2064,6 +2084,8 @@ int __exit mtk_fstb_exit(void)
 			&kobj_attr_fstb_fps_list);
 	fpsgo_sysfs_remove_file(fstb_kobj,
 			&kobj_attr_fstb_soft_level);
+	fpsgo_sysfs_remove_file(fstb_kobj,
+			&kobj_attr_jump_check_num);
 
 	fpsgo_sysfs_remove_dir(&fstb_kobj);
 

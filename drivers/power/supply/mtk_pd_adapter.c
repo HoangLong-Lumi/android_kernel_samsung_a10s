@@ -64,7 +64,7 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 	struct tcp_notify *noti = data;
 	struct mtk_pd_adapter_info *pinfo;
 	struct adapter_device *adapter;
-	int ret;
+	int ret = 0;
 
 	pinfo = container_of(pnb, struct mtk_pd_adapter_info, pd_nb);
 	adapter = pinfo->adapter_dev;
@@ -125,6 +125,23 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 //				MTK_PD_CONNECT_PE_READY_SNK_APDO, NULL);
 			break;
 		};
+		break;
+	case TCP_NOTIFY_TYPEC_STATE:
+		/* handle No-rp and dual-rp cable */
+		if (noti->typec_state.old_state == TYPEC_UNATTACHED &&
+		   (noti->typec_state.new_state == TYPEC_ATTACHED_CUSTOM_SRC ||
+		    noti->typec_state.new_state == TYPEC_ATTACHED_NORP_SRC)) {
+			pinfo->pd_type = MTK_PD_CONNECT_TYPEC_ONLY_SNK;
+			ret = srcu_notifier_call_chain(&adapter->evt_nh,
+				MTK_PD_CONNECT_TYPEC_ONLY_SNK, NULL);
+		} else if ((noti->typec_state.old_state ==
+			TYPEC_ATTACHED_CUSTOM_SRC ||
+			noti->typec_state.old_state == TYPEC_ATTACHED_NORP_SRC)
+			&& noti->typec_state.new_state == TYPEC_UNATTACHED) {
+			pinfo->pd_type = MTK_PD_CONNECT_NONE;
+			ret = srcu_notifier_call_chain(&adapter->evt_nh,
+				MTK_PD_CONNECT_NONE, NULL);
+		}
 		break;
 	case TCP_NOTIFY_WD_STATUS:
 		ret = srcu_notifier_call_chain(&adapter->evt_nh,
@@ -271,7 +288,7 @@ static int pd_get_cap(struct adapter_device *dev,
 	uint8_t cap_i = 0;
 	int ret;
 	int idx = 0;
-	int i, j;
+	unsigned int i, j;
 	struct mtk_pd_adapter_info *info;
 
 	info = (struct mtk_pd_adapter_info *)adapter_dev_get_drvdata(dev);
@@ -302,6 +319,9 @@ static int pd_get_cap(struct adapter_device *dev,
 			}
 
 			tacap->pwr_limit[idx] = apdo_cap.pwr_limit;
+			/* If TA has PDP, we set pwr_limit as true */
+			if (tacap->pdp > 0 && !tacap->pwr_limit[idx])
+				tacap->pwr_limit[idx] = 1;
 			tacap->ma[idx] = apdo_cap.ma;
 			tacap->max_mv[idx] = apdo_cap.max_mv;
 			tacap->min_mv[idx] = apdo_cap.min_mv;
@@ -345,7 +365,9 @@ static int pd_get_cap(struct adapter_device *dev,
 			j = 0;
 			pr_notice("adapter cap: nr:%d\n", pd_cap.nr);
 			for (i = 0; i < pd_cap.nr; i++) {
-				if (pd_cap.type[i] == 0) {
+				if (pd_cap.type[i] == 0 &&
+					j >= 0 &&
+					j < ADAPTER_CAP_MAX_NR) {
 					tacap->type[j] = MTK_PD;
 					tacap->ma[j] = pd_cap.ma[i];
 					tacap->max_mv[j] = pd_cap.max_mv[i];

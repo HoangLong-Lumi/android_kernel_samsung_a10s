@@ -3183,7 +3183,33 @@ __find_next_entry(struct trace_iterator *iter, int *ent_cpu,
 struct trace_entry *trace_find_next_entry(struct trace_iterator *iter,
 					  int *ent_cpu, u64 *ent_ts)
 {
-	return __find_next_entry(iter, ent_cpu, NULL, ent_ts);
+	/* __find_next_entry will reset ent_size */
+	int ent_size = iter->ent_size;
+	struct trace_entry *entry;
+
+	/*
+	 * The __find_next_entry() may call peek_next_entry(), which may
+	 * call ring_buffer_peek() that may make the contents of iter->ent
+	 * undefined. Need to copy iter->ent now.
+	 */
+	if (iter->ent && iter->ent != iter->temp) {
+		if (!iter->temp || iter->temp_size < iter->ent_size) {
+			void *temp;
+			temp = kmalloc(iter->ent_size, GFP_KERNEL);
+			if (!temp)
+				return NULL;
+			kfree(iter->temp);
+			iter->temp = temp;
+			iter->temp_size = iter->ent_size;
+		}
+		memcpy(iter->temp, iter->ent, iter->ent_size);
+		iter->ent = iter->temp;
+	}
+	entry = __find_next_entry(iter, ent_cpu, NULL, ent_ts);
+	/* Put back the original ent_size */
+	iter->ent_size = ent_size;
+
+	return entry;
 }
 
 /* Find the next real entry, and increment the iterator to the next entry */
@@ -3888,6 +3914,18 @@ __tracing_open(struct inode *inode, struct file *file, bool snapshot)
 		goto release;
 
 	/*
+	 * trace_find_next_entry() may need to save off iter->ent.
+	 * It will place it into the iter->temp buffer. As most
+	 * events are less than 128, allocate a buffer of that size.
+	 * If one is greater, then trace_find_next_entry() will
+	 * allocate a new buffer to adjust for the bigger iter->ent.
+	 * It's not critical if it fails to get allocated here.
+	 */
+	iter->temp = kmalloc(128, GFP_KERNEL);
+	if (iter->temp)
+		iter->temp_size = 128;
+
+	/*
 	 * We make a copy of the current tracer to avoid concurrent
 	 * changes on it while we are reading.
 	 */
@@ -3959,6 +3997,7 @@ __tracing_open(struct inode *inode, struct file *file, bool snapshot)
  fail:
 	mutex_unlock(&trace_types_lock);
 	kfree(iter->trace);
+	kfree(iter->temp);
 	kfree(iter->buffer_iter);
 release:
 	seq_release_private(inode, file);
@@ -4034,6 +4073,7 @@ static int tracing_release(struct inode *inode, struct file *file)
 
 	mutex_destroy(&iter->mutex);
 	free_cpumask_var(iter->started);
+	kfree(iter->temp);
 	kfree(iter->trace);
 	kfree(iter->buffer_iter);
 	seq_release_private(inode, file);
@@ -5439,7 +5479,7 @@ static int tracing_set_tracer(struct trace_array *tr, const char *buf)
 	}
 
 	/* If trace pipe files are being read, we can't change the tracer */
-	if (tr->current_trace->ref) {
+	if (tr->trace_ref) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -5657,7 +5697,7 @@ static int tracing_open_pipe(struct inode *inode, struct file *filp)
 
 	nonseekable_open(inode, filp);
 
-	tr->current_trace->ref++;
+	tr->trace_ref++;
 out:
 	mutex_unlock(&trace_types_lock);
 	return ret;
@@ -5676,7 +5716,7 @@ static int tracing_release_pipe(struct inode *inode, struct file *file)
 
 	mutex_lock(&trace_types_lock);
 
-	tr->current_trace->ref--;
+	tr->trace_ref--;
 
 	if (iter->trace->pipe_close)
 		iter->trace->pipe_close(iter);
@@ -6739,7 +6779,7 @@ static int tracing_buffers_open(struct inode *inode, struct file *filp)
 
 	filp->private_data = info;
 
-	tr->current_trace->ref++;
+	tr->trace_ref++;
 
 	mutex_unlock(&trace_types_lock);
 
@@ -6840,7 +6880,7 @@ static int tracing_buffers_release(struct inode *inode, struct file *file)
 
 	mutex_lock(&trace_types_lock);
 
-	iter->tr->current_trace->ref--;
+	iter->tr->trace_ref--;
 
 	__trace_array_put(iter->tr);
 
@@ -7958,7 +7998,7 @@ static int instance_rmdir(const char *name)
 		goto out_unlock;
 
 	ret = -EBUSY;
-	if (tr->ref || (tr->current_trace && tr->current_trace->ref))
+	if (tr->ref || (tr->current_trace && tr->trace_ref))
 		goto out_unlock;
 
 	list_del(&tr->list);

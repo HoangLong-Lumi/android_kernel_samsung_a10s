@@ -34,10 +34,7 @@
 
 #include <memory-amms.h>
 #include "mt-plat/mtk_ccci_common.h"
-
-#ifndef DISABLE_MTK_BOOT_MODE
 #include <mt-plat/mtk_boot_common.h>
-#endif
 
 #if defined(ENABLE_32K_CLK_LESS)
 //#include <mt-plat/mtk_rtc.h>
@@ -85,6 +82,8 @@ struct ccci_smem_region md1_6293_noncacheable_fat[] = {
 {SMEM_USER_MAX, }, /* tail guard */
 };
 #define CCB_CACHE_MIN_SIZE    (2 * 1024 * 1024)
+static const char *s_smem_user_names[SMEM_USER_MAX];
+
 struct ccci_smem_region md1_6293_cacheable[] = {
 /*
  * all CCB user should be put together, and the total size is set
@@ -179,6 +178,48 @@ struct ccci_smem_region md3_6291_noncacheable_fat[] = {
 {SMEM_USER_MAX, },
 };
 
+static void init_smem_user_name(void)
+{
+	s_smem_user_names[SMEM_USER_RAW_DBM] = "RAW_DBM";
+	s_smem_user_names[SMEM_USER_CCB_DHL] = "CCB_DHL";
+	s_smem_user_names[SMEM_USER_CCB_MD_MONITOR] = "CCB_MD_MONITOR";
+	s_smem_user_names[SMEM_USER_CCB_META] = "CCB_META";
+	s_smem_user_names[SMEM_USER_RAW_CCB_CTRL] = "RAW_CCB_CTRL";
+	s_smem_user_names[SMEM_USER_RAW_DHL] = "RAW_DHL";
+	s_smem_user_names[SMEM_USER_RAW_MDM] = "RAW_MDM";
+	s_smem_user_names[SMEM_USER_RAW_NETD] = "RAW_NETD";
+	s_smem_user_names[SMEM_USER_RAW_USB] = "RAW_USB";
+	s_smem_user_names[SMEM_USER_RAW_AUDIO] = "RAW_AUDIO";
+	s_smem_user_names[SMEM_USER_RAW_DFD] = "RAW_DFD";
+	s_smem_user_names[SMEM_USER_RAW_LWA] = "RAW_LWA";
+	s_smem_user_names[SMEM_USER_RAW_MDCCCI_DBG] = "RAW_MDCCCI_DBG";
+	s_smem_user_names[SMEM_USER_RAW_MDSS_DBG] = "RAW_MDSS_DBG";
+	s_smem_user_names[SMEM_USER_RAW_RUNTIME_DATA] = "RAW_RUNTIME_DATA";
+	s_smem_user_names[SMEM_USER_RAW_FORCE_ASSERT] = "RAW_FORCE_ASSERT";
+	s_smem_user_names[SMEM_USER_CCISM_SCP] = "CCISM_SCP";
+	s_smem_user_names[SMEM_USER_RAW_MD2MD] = "RAW_MD2MD";
+	s_smem_user_names[SMEM_USER_RAW_RESERVED] = "RAW_RESERVED";
+	s_smem_user_names[SMEM_USER_CCISM_MCU] = "CCISM_MCU";
+	s_smem_user_names[SMEM_USER_CCISM_MCU_EXP] = "CCISM_MCU_EXP";
+	s_smem_user_names[SMEM_USER_SMART_LOGGING] = "SMART_LOGGING";
+	s_smem_user_names[SMEM_USER_RAW_MD_CONSYS] = "RAW_MD_CONSYS";
+	s_smem_user_names[SMEM_USER_RAW_PHY_CAP] = "RAW_PHY_CAP";
+	s_smem_user_names[SMEM_USER_RAW_USIP] = "RAW_USIP";
+	s_smem_user_names[SMEM_USER_RAW_UDC_DATA] = "RAW_UDC_DATA";
+	s_smem_user_names[SMEM_USER_RAW_UDC_DESCTAB] = "RAW_UDC_DESCTAB";
+	s_smem_user_names[SMEM_USER_RAW_AMMS_POS] = "RAW_AMMS_POS";
+	s_smem_user_names[SMEM_USER_RAW_ALIGN_PADDING] = "RAW_ALIGN_PADDING";
+}
+
+
+static const char *get_smem_user_name(int user_id)
+{
+	if (user_id < 0 || user_id >= SMEM_USER_MAX)
+		return "";
+
+	return s_smem_user_names[user_id];
+}
+
 static struct ccci_smem_region *get_smem_by_user_id(
 	struct ccci_smem_region *regions, enum SMEM_USER_ID user_id)
 {
@@ -205,6 +246,7 @@ static void init_smem_regions(struct ccci_smem_region *regions,
 	phys_addr_t base_md_view_phy)
 {
 	int i;
+	int calc_offset = 0;
 
 	for (i = 0; ; i++) {
 		if (!regions || regions[i].id == SMEM_USER_MAX)
@@ -220,9 +262,32 @@ static void init_smem_regions(struct ccci_smem_region *regions,
 			base_ap_view_vir + regions[i].offset;
 		regions[i].base_md_view_phy =
 			base_md_view_phy + regions[i].offset;
+
+
+		if (calc_offset != regions[i].offset) {
+			if ((i > 0) &&
+				(regions[i-1].offset == regions[i].offset))
+				CCCI_BOOTUP_LOG(-1, TAG,
+					"[%s] (%s) and (%s) is overlap.\n",
+					__func__,
+					get_smem_user_name(regions[i-1].id),
+					get_smem_user_name(regions[i].id));
+			else
+				CCCI_BOOTUP_LOG(-1, TAG,
+					"[%s] <%d>(%s) padding size: %x\n",
+					__func__, regions[i].id,
+					get_smem_user_name(regions[i].id),
+					regions[i].offset - calc_offset);
+
+			calc_offset = regions[i].offset + regions[i].size;
+
+		} else
+			calc_offset += regions[i].size;
+
 		CCCI_BOOTUP_LOG(-1, TAG,
-			"%s: reg[%d](%lx %llx %lx)\n", __func__,
-			i, (unsigned long)regions[i].base_ap_view_phy,
+			"%s: reg[%d](%s)<%d>(%lx %llx %lx)\n", __func__,
+			i, get_smem_user_name(regions[i].id), regions[i].id,
+			(unsigned long)regions[i].base_ap_view_phy,
 			(u64)regions[i].base_ap_view_vir,
 			(unsigned long)regions[i].base_md_view_phy);
 	}
@@ -577,8 +642,9 @@ void ccci_md_config(struct ccci_modem *md)
 			md->mem_layout.md_bank4_cacheable_total.base_ap_view_phy
 			, md->mem_layout.md_bank4_cacheable_total.size);
 		if (md->index == MD_SYS1) {
+			/* sync with lk:md1_bank4_cache_offset */
 			md->mem_layout.md_bank4_cacheable_total.base_md_view_phy
-				= 0x40000000 + (224 * 1024 * 1024) +
+				= 0x40000000 + get_md_smem_cachable_offset(MD_SYS1) +
 			md->mem_layout.md_bank4_cacheable_total.base_ap_view_phy
 				- round_down(
 			md->mem_layout.md_bank4_cacheable_total.base_ap_view_phy
@@ -605,10 +671,15 @@ void ccci_md_config(struct ccci_modem *md)
 	if (md->hw_info->plat_val->md_gen == 6293)
 		ccci_md_config_layout_6293(md);
 
+	CCCI_BOOTUP_LOG(-1, TAG,
+		"[%s] init bank4 noncacheable:\n", __func__);
 	init_smem_regions(md->mem_layout.md_bank4_noncacheable,
 		md->mem_layout.md_bank4_noncacheable_total.base_ap_view_phy,
 		md->mem_layout.md_bank4_noncacheable_total.base_ap_view_vir,
 		md->mem_layout.md_bank4_noncacheable_total.base_md_view_phy);
+
+	CCCI_BOOTUP_LOG(-1, TAG,
+		"[%s] init bank4 cacheable:\n", __func__);
 	init_smem_regions(md->mem_layout.md_bank4_cacheable,
 		md->mem_layout.md_bank4_cacheable_total.base_ap_view_phy,
 		md->mem_layout.md_bank4_cacheable_total.base_ap_view_vir,
@@ -851,6 +922,8 @@ int ccci_md_register(struct ccci_modem *md)
 
 	/* init per-modem sub-system */
 	CCCI_INIT_LOG(md->index, TAG, "register modem\n");
+	init_smem_user_name();
+
 	/* init modem */
 	ret = md->ops->init(md);
 	if (ret < 0)
@@ -884,7 +957,7 @@ int ccci_md_set_boot_data(unsigned char md_id, unsigned int data[], int len)
 
 struct ccci_mem_layout *ccci_md_get_mem(int md_id)
 {
-	if (md_id >= MAX_MD_NUM)
+	if (md_id >= MAX_MD_NUM || md_id < 0)
 		return NULL;
 	return &modem_sys[md_id]->mem_layout;
 }
@@ -894,7 +967,7 @@ struct ccci_smem_region *ccci_md_get_smem_by_user_id(int md_id,
 {
 	struct ccci_smem_region *curr = NULL;
 
-	if (md_id >= MAX_MD_NUM)
+	if (md_id >= MAX_MD_NUM || md_id < 0)
 		return NULL;
 
 	if (modem_sys[md_id] == NULL) {
@@ -919,6 +992,10 @@ void ccci_md_clear_smem(int md_id, int first_boot)
 	struct ccci_smem_region *region;
 	unsigned int size;
 
+	if (md_id < 0 || md_id >= MAX_MD_NUM) {
+		CCCI_ERROR_LOG(md_id, TAG, "invalid md_id %d!!\n", md_id);
+		return;
+	}
 	/* MD will clear share memory itself after the first boot */
 	clear_smem_region(modem_sys[md_id]->mem_layout.md_bank4_noncacheable,
 		first_boot);
@@ -1098,41 +1175,68 @@ static void append_runtime_feature(char **p_rt_data,
 	}
 }
 
+
+struct ccci_tag_bootmode {
+	u32 size;
+	u32 tag;
+	u32 bootmode;
+	u32 boottype;
+};
+
+static unsigned int get_boot_mode_from_dts(void)
+{
+	struct device_node *np_chosen = NULL;
+	struct ccci_tag_bootmode *tag = NULL;
+	u32 bootmode = NORMAL_BOOT_ID;
+
+	np_chosen = of_find_node_by_path("/chosen");
+	if (!np_chosen) {
+		CCCI_ERROR_LOG(-1, TAG, "warning: not find node: '/chosen'\n");
+
+		np_chosen = of_find_node_by_path("/chosen@0");
+		if (!np_chosen) {
+			CCCI_ERROR_LOG(-1, TAG,
+				"[%s] error: not find node: '/chosen@0'\n",
+				__func__);
+			return NORMAL_BOOT_ID;
+		}
+	}
+
+	tag = (struct ccci_tag_bootmode *)
+			of_get_property(np_chosen, "atag,boot", NULL);
+	if (!tag) {
+		CCCI_ERROR_LOG(-1, TAG,
+			"[%s] error: not find tag: 'atag,boot';\n", __func__);
+		return NORMAL_BOOT_ID;
+	}
+
+	if (tag->bootmode == META_BOOT || tag->bootmode == ADVMETA_BOOT)
+		bootmode = META_BOOT_ID;
+
+	else if (tag->bootmode == FACTORY_BOOT ||
+			tag->bootmode == ATE_FACTORY_BOOT)
+		bootmode = FACTORY_BOOT_ID;
+
+	CCCI_NORMAL_LOG(-1, TAG,
+		"[%s] bootmode: 0x%x boottype: 0x%x; return: 0x%x\n",
+		__func__, tag->bootmode, tag->boottype, bootmode);
+
+	return bootmode;
+}
+
 static unsigned int get_booting_start_id(struct ccci_modem *md)
 {
 	enum LOGGING_MODE mdlog_flag = MODE_IDLE;
-	u32 booting_start_id;
+	u32 booting_start_id = 0;
 
 	mdlog_flag = md->mdlg_mode;
-#ifndef DISABLE_MTK_BOOT_MODE
-	if (md->per_md_data.md_boot_mode != MD_BOOT_MODE_INVALID) {
-		if (md->per_md_data.md_boot_mode == MD_BOOT_MODE_META)
-			booting_start_id = ((char)mdlog_flag << 8
-								| META_BOOT_ID);
-		else if ((get_boot_mode() == FACTORY_BOOT ||
-				get_boot_mode() == ATE_FACTORY_BOOT))
-			booting_start_id = ((char)mdlog_flag << 8
-							| FACTORY_BOOT_ID);
-		else
-			booting_start_id = ((char)mdlog_flag << 8
-							| NORMAL_BOOT_ID);
-	} else {
-		if (is_meta_mode() || is_advanced_meta_mode())
-			booting_start_id = ((char)mdlog_flag << 8
-							| META_BOOT_ID);
-		else if ((get_boot_mode() == FACTORY_BOOT ||
-				get_boot_mode() == ATE_FACTORY_BOOT))
-			booting_start_id = ((char)mdlog_flag << 8
-							| FACTORY_BOOT_ID);
-		else
-#endif
-			booting_start_id = ((char)mdlog_flag << 8
-							| NORMAL_BOOT_ID);
-#ifndef DISABLE_MTK_BOOT_MODE
-	}
-#endif
+
+	booting_start_id = (((char)mdlog_flag << 8)
+				| get_boot_mode_from_dts());
+
 	CCCI_BOOTUP_LOG(md->index, TAG,
 		"%s 0x%x\n", __func__, booting_start_id);
+
 	return booting_start_id;
 }
 
@@ -1842,9 +1946,10 @@ static void receive_wakeup_src_notify(int md_id, char *buf, unsigned int len)
 
 	if (len == 0) {
 		/* before spm add MD_WAKEUP_SOURCE parameter. */
-		if (md_id == MD_SYS1)
+		if (md_id == MD_SYS1) {
 			ccci_hif_set_wakeup_src(MD1_NET_HIF, 1);
 			ccci_hif_set_wakeup_src(CCIF_HIF_ID, 1);
+		}
 		if (md_id == MD_SYS3)
 			ccci_hif_set_wakeup_src(CCIF_HIF_ID, 1);
 		return;
@@ -1960,8 +2065,11 @@ int exec_ccci_kern_func_by_md_id(int md_id, unsigned int id, char *buf,
 				MD_SW_MD2_TX_POWER;
 			unsigned int mode = *((unsigned int *)buf);
 
+			/*send tx power status for swtp and carkit*/
 			ret = ccci_port_send_msg_to_md(md_id, CCCI_SYSTEM_TX,
 				msg_id, mode, 0);
+			ret = ccci_port_send_msg_to_md(md_id, CCCI_SYSTEM_TX,
+				MD_CARKIT_STATUS, mode, 0);
 		}
 		break;
 	case ID_DUMP_MD_SLEEP_MODE:

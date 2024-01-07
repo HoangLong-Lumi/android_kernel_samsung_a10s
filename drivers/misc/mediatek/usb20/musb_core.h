@@ -49,6 +49,8 @@ extern bool musb_host_db_workaround1;
 extern bool musb_host_db_workaround2;
 extern long musb_host_db_delay_ns;
 extern long musb_host_db_workaround_cnt;
+extern int mtk_host_audio_free_ep_udelay;
+
 extern struct musb *mtk_musb;
 extern bool mtk_usb_power;
 extern ktime_t ktime_ready;
@@ -492,6 +494,9 @@ struct musb {
 #endif /* CONFIG_DUAL_ROLE_USB_INTF */
 	struct power_supply *usb_psy;
 	struct notifier_block psy_nb;
+#if defined(CONFIG_CABLE_TYPE_NOTIFIER)
+	int sec_cable_type;
+#endif
 };
 
 static inline struct musb *gadget_to_musb(struct usb_gadget *g)
@@ -554,6 +559,9 @@ extern irqreturn_t musb_interrupt(struct musb *musb);
 extern irqreturn_t dma_controller_irq(int irq, void *private_data);
 
 extern void musb_hnp_stop(struct musb *musb);
+#if defined(CONFIG_CABLE_TYPE_NOTIFIER)
+extern bool musb_is_host(void);
+#endif
 
 static inline void musb_platform_set_vbus(struct musb *musb, int is_on)
 {

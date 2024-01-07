@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2015 MediaTek Inc.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
 
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -168,7 +167,7 @@ void ppm_cobra_update_limit(void *user_req)
 
 	for_each_ppm_clusters(i) {
 #ifndef NO_SCHEDULE_API
-		arch_get_cluster_cpus(&cluster_cpu, i);
+		ppm_get_cl_cpus(&cluster_cpu, i);
 		cpumask_and(&online_cpu, &cluster_cpu, cpu_online_mask);
 
 		cl_status[i].core_num = cpumask_weight(&online_cpu);
@@ -662,7 +661,8 @@ static unsigned int get_limit_opp_and_budget(void)
 				continue;
 
 			idx = j * 4 + cobra_lookup_data.limit[j].core - 1;
-			power += cobra_tbl.ptbl[idx][i].power_idx;
+			if (idx > 0)
+				power += cobra_tbl.ptbl[idx][i].power_idx;
 		}
 
 		if (power <= cobra_lookup_data.budget)

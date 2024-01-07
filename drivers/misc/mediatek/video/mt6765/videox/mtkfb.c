@@ -567,6 +567,8 @@ static int mtkfb_pan_display_impl(struct fb_var_screeninfo *var,
 		return -1;
 	}
 
+	session_input->config_layer_num = 0;
+
 	/* pan display use layer 0 */
 	input = &session_input->config[0];
 	input->layer_id = 0;
@@ -1170,100 +1172,6 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 		up(&sem_early_suspend);
 		return r;
 	}
-	case MTKFB_CAPTURE_FRAMEBUFFER:
-	{
-#if 0 /* comment this for iofuzzer security issue */
-		unsigned long *src_pbuf = 0;
-		unsigned int pixel_bpp = primary_display_get_bpp() / 8;
-		unsigned int fbsize = DISP_GetScreenHeight() *
-			DISP_GetScreenWidth() * pixel_bpp;
-
-		src_pbuf = vmalloc(fbsize);
-		if (!src_pbuf) {
-			MTKFB_LOG(
-				"[FB]: vmalloc capture src_pbuf failed! line:%d\n",
-				__LINE__);
-			return -EFAULT;
-		}
-
-		dprec_logger_start(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-		r = primary_display_capture_framebuffer_ovl(
-			(unsigned long)src_pbuf, UFMT_BGRA8888);
-		if (r < 0)
-			DISPERR(
-			"primary display capture framebuffer failed!\n");
-		dprec_logger_done(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-		if (copy_to_user((void __user *)arg, src_pbuf, fbsize)) {
-			MTKFB_LOG("[FB]: copy_to_user failed! line:%d\n",
-				__LINE__);
-			r = -EFAULT;
-		}
-		vfree(src_pbuf);
-#endif
-		return r;
-	}
-	case MTKFB_SLT_AUTO_CAPTURE:
-	{
-#if 0 /* please open this when need SLT */
-		struct fb_slt_catpure capConfig;
-		unsigned long *src_pbuf = 0;
-		unsigned int format;
-		unsigned int pixel_bpp = primary_display_get_bpp() / 8;
-		unsigned int fbsize = DISP_GetScreenHeight() *
-			DISP_GetScreenWidth() * pixel_bpp;
-
-		if (copy_from_user(&capConfig, (void __user *)arg,
-				sizeof(capConfig))) {
-			MTKFB_LOG("[FB]: copy_from_user failed! line:%d\n",
-				__LINE__);
-			return -EFAULT;
-		}
-
-		switch (capConfig.format) {
-		case MTK_FB_FORMAT_RGB888:
-			format = UFMT_RGB888;
-			break;
-		case MTK_FB_FORMAT_BGR888:
-			format = UFMT_BGR888;
-			break;
-		case MTK_FB_FORMAT_ARGB8888:
-			format = UFMT_ARGB8888;
-			break;
-		case MTK_FB_FORMAT_RGB565:
-			format = UFMT_RGB565;
-			break;
-		case MTK_FB_FORMAT_UYVY:
-			format = UFMT_UYVY;
-			break;
-		case MTK_FB_FORMAT_ABGR8888:
-		default:
-			format = UFMT_ABGR8888;
-			break;
-		}
-		src_pbuf = vmalloc(fbsize);
-		if (!src_pbuf) {
-			MTKFB_LOG(
-				"[FB]: vmalloc capture src_pbuf failed! line:%d\n",
-				__LINE__);
-			return -EFAULT;
-		}
-
-		r = primary_display_capture_framebuffer_ovl(
-				(unsigned long)src_pbuf, format);
-		if (r < 0)
-			DISPERR(
-			"primary display capture framebuffer failed!\n");
-
-		if (copy_to_user((unsigned long *)capConfig.outputBuffer,
-				src_pbuf, fbsize)) {
-			MTKFB_LOG("[FB]: copy_to_user failed! line:%d\n",
-				__LINE__);
-			r = -EFAULT;
-		}
-		vfree(src_pbuf);
-#endif
-		return r;
-	}
 	case MTKFB_GET_OVERLAY_LAYER_INFO:
 	{
 		struct fb_overlay_layer_info layerInfo;
@@ -1540,6 +1448,37 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 
 		return 0;
 	}
+	//+Bug 623261, chensibo.wt, ADD, 20210201, add CABC function
+		case SYSFS_SET_LCM_CABC_MODE:
+	{
+		int lcm_cabc_enable = 0;
+
+		lcm_cabc_enable = *(int*)arg;
+		if(primary_display_set_cabc(lcm_cabc_enable))
+		{
+			MTKFB_LOG("[MTKFB]: set CABC fail! line:%d\n",
+				__LINE__);
+			r = -EFAULT;
+		}
+		return r;
+	}
+
+	case SYSFS_GET_LCM_CABC_MODE:
+	{
+		int lcm_cabc_status = 0;
+
+		if(primary_display_get_cabc(&lcm_cabc_status)){
+			MTKFB_LOG("[MTKFB]: get CABC fail! line:%d\n",
+				__LINE__);
+			r = -EFAULT;
+		}
+
+		memcpy((void*)arg, (void*)&lcm_cabc_status, sizeof(int));
+
+		return r;
+	}
+	//-Bug 623261, chensibo.wt, ADD, 20210201, add CABC function
+
 	default:
 		DISPWARN(
 			"mtkfb_ioctl Not support, info=0x%p, cmd=0x%08x, arg=0x%08lx\n",
@@ -2512,34 +2451,8 @@ static int mtkfb_probe(struct platform_device *pdev)
 
 	DISPMSG("mtkfb_probe: fb_pa = %pa\n", &fb_base);
 
-#ifdef CONFIG_MTK_IOMMU_V2
-	temp_va = (size_t)ioremap_nocache(fb_base,
-		(fb_base + vramsize - fb_base));
-	fbdev->fb_va_base = (void *)temp_va;
-	ion_display_client = disp_ion_create("disp_fb0");
-	if (ion_display_client == NULL) {
-		DISPERR("mtkfb_probe: fail to create ion\n");
-		r = -1;
-		goto cleanup;
-	}
-
-	ion_display_handle = disp_ion_alloc(ion_display_client,
-		ION_HEAP_MULTIMEDIA_MAP_MVA_MASK, temp_va,
-		(fb_base + vramsize - fb_base));
-	if (r != 0) {
-		DISPERR("mtkfb_probe: fail to allocate buffer\n");
-		r = -1;
-		goto cleanup;
-	}
-
-	disp_ion_get_mva(ion_display_client,
-		ion_display_handle,
-		&fb_pa,
-		DISP_M4U_PORT_DISP_OVL0);
-#else
 	disp_hal_allocate_framebuffer(fb_base, (fb_base + vramsize - 1),
 		(unsigned long *)(&fbdev->fb_va_base), &fb_pa);
-#endif
 	fbdev->fb_pa_base = fb_base;
 
 	primary_display_set_frame_buffer_address(
@@ -2639,14 +2552,6 @@ static int mtkfb_probe(struct platform_device *pdev)
 	ion_drv_create_FB_heap(mtkfb_get_fb_base(), mtkfb_get_fb_size());
 #endif
 	fbdev->state = MTKFB_ACTIVE;
-
-#ifdef CONFIG_MTK_ECCCI_DRIVER
-	if (!strcmp(mtkfb_find_lcm_driver(),
-		"nt35521_hd_dsi_vdo_truly_rt5081_drv")) {
-		register_ccci_sys_call_back(MD_SYS1,
-			MD_DISPLAY_DYNAMIC_MIPI, mipi_clk_change);
-	}
-#endif
 
 	MSG_FUNC_LEAVE();
 	pr_info("disp driver(2) mtkfb_probe end\n");

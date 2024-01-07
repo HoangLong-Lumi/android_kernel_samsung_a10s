@@ -19,15 +19,16 @@ static struct dfd_drv *drv;
 static void __iomem *toprgu_base;
 
 /* return -1 for error indication */
-int dfd_setup(void)
+int dfd_setup(int version)
 {
 	int ret;
+	int dfd_doe;
 	struct arm_smccc_res res;
 
 	if (drv && (drv->enabled == 1) && (drv->base_addr > 0)) {
 		/* check support or not first */
-		if (check_dfd_support() == 0)
-			return -1;
+		if (!drv->check_dfd_support)
+			return -EINVAL;
 
 		pr_info("dfd setup\n");
 
@@ -35,10 +36,27 @@ int dfd_setup(void)
 		ret = mtk_dbgtop_dfd_therm1_dis(1);
 		ret = mtk_dbgtop_dfd_therm2_dis(0);
 		ret = mtk_dbgtop_dfd_timeout(drv->rg_dfd_timeout);
-
-		arm_smccc_smc(MTK_SIP_KERNEL_DFD, DFD_SMC_MAGIC_SETUP,
-			(u64) drv->base_addr, drv->chain_length,
-			0, 0, 0, 0, &res);
+		if (drv->mem_reserve && drv->cachedump_en) {
+			dfd_doe = DFD_CACHE_DUMP_ENABLE;
+			if (drv->l2c_trigger)
+				dfd_doe |= DFD_PARITY_ERR_TRIGGER;
+			if (version == DFD_EXTENDED_DUMP)
+				arm_smccc_smc(MTK_SIP_KERNEL_DFD,
+					DFD_SMC_MAGIC_SETUP,
+					(u64) drv->base_addr,
+					drv->chain_length,
+					dfd_doe, 0, 0, 0, &res);
+			else
+				arm_smccc_smc(MTK_SIP_KERNEL_DFD,
+					DFD_SMC_MAGIC_SETUP,
+					(u64) drv->base_addr,
+					drv->chain_length,
+					0, 0, 0, 0, &res);
+		} else {
+			arm_smccc_smc(MTK_SIP_KERNEL_DFD, DFD_SMC_MAGIC_SETUP,
+				(u64) drv->base_addr, drv->chain_length,
+				0, 0, 0, 0, &res);
+		}
 
 		if (set_sram_flag_dfd_valid() < 0)
 			return -1;
@@ -75,12 +93,19 @@ static int __init dfd_init(void)
 	/* get dfd settings */
 	dev_node = of_find_compatible_node(NULL, NULL, "mediatek,dfd");
 	if (dev_node) {
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,dfd_latch_offset", &val)) {
+			pr_info("%s: Latch offset not found.\n", __func__);
+			return -ENODATA;
+		}
+
 		tmp = of_find_compatible_node(NULL, NULL, "mediatek,toprgu");
 		toprgu_base = of_iomap(tmp, 0);
 		if (!toprgu_base)
 			pr_info("RGU base not found.\n");
 		else
-			get_dfd_base(toprgu_base);
+			get_dfd_base(toprgu_base, val);
 
 		pr_info("get topdbg base\n");
 
@@ -100,8 +125,45 @@ static int __init dfd_init(void)
 			drv->rg_dfd_timeout = 0;
 		else
 			drv->rg_dfd_timeout = val;
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,check_dfd_support", &val))
+			drv->check_dfd_support = 0;
+		else
+			drv->check_dfd_support = val;
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,dfd_infra_base", &val))
+			drv->dfd_infra_base = 0;
+		else
+			drv->dfd_infra_base = val;
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,dfd_ap_addr_offset", &val))
+			drv->dfd_ap_addr_offset = 0;
+		else
+			drv->dfd_ap_addr_offset = val;
 	} else
 		return -ENODEV;
+
+	/* for cachedump enable */
+	dev_node = of_find_compatible_node(NULL, NULL,
+		"mediatek,dfd_cache");
+	if (dev_node) {
+		if (of_property_read_u32(dev_node, "mediatek,enabled", &val))
+			drv->cachedump_en = 0;
+		else
+			drv->cachedump_en = val;
+
+		if (drv->cachedump_en) {
+			if (!of_property_read_u32(dev_node,
+				"mediatek,rg_dfd_timeout", &val))
+				drv->rg_dfd_timeout = val;
+			if (!of_property_read_u32(dev_node,
+				"mediatek,l2c_trigger", &val))
+				drv->l2c_trigger = val;
+		}
+	}
 
 	if (drv->enabled == 0)
 		return 0;
@@ -114,15 +176,25 @@ static int __init dfd_init(void)
 		drv->base_addr_msb = 0;
 	}
 
+	of_scan_flat_dt(fdt_get_chosen, &node);
+	if (node) {
+		prop = of_get_flat_dt_prop(node,
+			"dfd,cache_dump_support", NULL);
+		drv->mem_reserve = (prop) ? of_read_number(prop, 1) : 0;
+	} else {
+		drv->mem_reserve = 0;
+	}
+
 	infra_node = of_find_compatible_node(NULL, NULL,
 			"mediatek,common-infracfg_ao");
 	if (infra_node) {
 		void __iomem *infra = of_iomap(infra_node, 0);
 
 		if (infra && drv->base_addr_msb) {
-			infra += dfd_infra_base();
+			infra += drv->dfd_infra_base;
 			writel(readl(infra)
-				| (drv->base_addr_msb >> dfd_ap_addr_offset()),
+				| (drv->base_addr_msb >>
+					drv->dfd_ap_addr_offset),
 				infra);
 		}
 	}

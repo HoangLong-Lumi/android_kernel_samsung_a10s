@@ -319,6 +319,9 @@ static noinline void double_free(void)
 	char *p = kmalloc(32, GFP_KERNEL);
 	int i;
 
+	if (p == NULL)
+		return;
+
 	pr_info("test case : double free\n");
 	for (i = 0; i < 32; i++)
 		p[i] = (char)i;
@@ -347,6 +350,8 @@ static ssize_t proc_generate_oops_read(struct file *file,
 	char buffer[BUFSIZE];
 
 	len = snprintf(buffer, BUFSIZE, "Oops Generated!\n");
+	if (len <= 0)
+		pr_debug("%s: snprintf error\n", __func__);
 	if (copy_to_user(buf, buffer, len))
 		pr_notice("%s fail to output info.\n", __func__);
 
@@ -487,6 +492,8 @@ static ssize_t proc_generate_ee_read(struct file *file, char __user *buf,
 	kfree(log);
 
 	len = snprintf(buffer, BUFSIZE, "Modem EE Generated\n");
+	if (len <= 0)
+		pr_debug("%s: snprintf error\n", __func__);
 	if (copy_to_user(buf, buffer, len)) {
 		pr_notice("%s fail to output info.\n", __func__);
 		return -EFAULT;
@@ -521,6 +528,8 @@ static ssize_t proc_generate_combo_read(struct file *file, char __user *buf,
 	vfree(ptr);
 
 	len = snprintf(buffer, BUFSIZE, "Combo EE Generated\n");
+	if (len <= 0)
+		pr_debug("%s: snprintf error\n", __func__);
 	if (copy_to_user(buf, buffer, len)) {
 		pr_notice("%s fail to output info.\n", __func__);
 		return -EFAULT;
@@ -558,10 +567,8 @@ static ssize_t proc_generate_md32_read(struct file *file, char __user *buf,
 	vfree(ptr);
 
 	len = snprintf(buffer, BUFSIZE, "MD32 EE Generated\n");
-	if (len < 0) {
+	if (len < 0)
 		pr_info("%s: snprintf failed\n", __func__);
-		return -EFAULT;
-	}
 	if (copy_to_user(buf, buffer, len)) {
 		pr_notice("%s fail to output info.\n", __func__);
 		return -EFAULT;
@@ -601,10 +608,8 @@ static ssize_t proc_generate_scp_read(struct file *file,
 	vfree(ptr);
 
 	len = snprintf(buffer, BUFSIZE, "SCP EE Generated\n");
-	if (len < 0) {
+	if (len < 0)
 		pr_info("%s: snprintf failed\n", __func__);
-		return -EFAULT;
-	}
 	if (copy_to_user(buf, buffer, len)) {
 		pr_notice("%s fail to output info.\n", __func__);
 		return -EFAULT;
@@ -628,6 +633,8 @@ static ssize_t proc_generate_kernel_notify_read(struct file *file,
 	char buffer[BUFSIZE];
 	int len = snprintf(buffer, BUFSIZE,
 			   "Usage: write message with format \"R|W|E:Tag:You Message\" into this file to generate kernel warning\n");
+	if (len <= 0)
+		pr_debug("%s: snprintf error\n", __func__);
 	if (*ppos)
 		return 0;
 	if (copy_to_user(buf, buffer, len)) {
@@ -673,16 +680,16 @@ static ssize_t proc_generate_kernel_notify_write(struct file *file,
 
 	switch (msg[0]) {
 	case 'R':
-		aee_kernel_reminding(&msg[2], colon_ptr + 1);
+		aee_kernel_reminding(&msg[2], "Hello World[Error]");
 		break;
 
 	case 'W':
-		aee_kernel_warning(&msg[2], colon_ptr + 1);
+		aee_kernel_warning(&msg[2], "Hello World[Error]");
 		break;
 
 	case 'E':
-		aee_kernel_exception(&msg[2], colon_ptr + 1);
-		WARN(1, AEE_FMT, 0, 'E', &msg[2], colon_ptr + 1);
+		aee_kernel_exception(&msg[2], "Hello World[Error]");
+		WARN(1, AEE_FMT, 0, 'E', &msg[2], "Hello World[Error]");
 		break;
 
 	default:

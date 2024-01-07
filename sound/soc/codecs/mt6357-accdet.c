@@ -32,6 +32,24 @@
 #include "mt6357-accdet.h"
 #include "mt6357.h"
 /* grobal variable definitions */
+#define NO_USE_COMPARATOR	1
+
+#if NO_USE_COMPARATOR
+/* for headset pole type definition  */
+#define TYPE_AB_00		(0x00)/* 3-pole or hook_switch */
+#define TYPE_AB_01		(0x01)/* 4-pole */
+#define TYPE_AB_11		(0x03)/* plug-out */
+#define TYPE_AB_10		(0x02)/* Illegal state */
+struct Vol_Set {/* mv */
+	unsigned int vol_min_3pole;
+	unsigned int vol_max_3pole;
+	unsigned int vol_min_4pole;
+	unsigned int vol_max_4pole;
+	unsigned int vol_bias;/* >2500: 2800; others: 2500 */
+};
+static struct Vol_Set cust_vol_set;
+#endif
+
 #define REGISTER_VAL(x)	(x - 1)
 #define HAS_CAP(_c, _x)	(((_c) & (_x)) == (_x))
 #define ACCDET_PMIC_EINT_IRQ		BIT(0)
@@ -63,10 +81,9 @@
 #define EINT_PLUG_OUT			(0)
 #define EINT_PLUG_IN			(1)
 #define EINT_MOISTURE_DETECTED	(2)
+#define EINT_THING_IN	(3)
 
 struct mt63xx_accdet_data {
-	u32 base;
-	struct snd_soc_card card;
 	struct snd_soc_jack jack;
 	struct platform_device *pdev;
 	struct device *dev;
@@ -128,7 +145,6 @@ struct pwm_deb_settings *cust_pwm_deb;
 
 struct accdet_priv {
 	u32 caps;
-	struct snd_card *snd_card;
 };
 
 static struct accdet_priv mt6357_accdet[] = {
@@ -150,16 +166,8 @@ const struct of_device_id accdet_of_match[] = {
 	},
 };
 
-static struct snd_soc_jack_pin accdet_jack_pins[] = {
-	{
-		.pin = "Headset",
-		.mask = SND_JACK_HEADSET |
-			SND_JACK_LINEOUT |
-			SND_JACK_MECHANICAL,
-	},
-};
-
 static struct platform_driver accdet_driver;
+static const struct snd_soc_component_driver accdet_soc_driver;
 
 static atomic_t accdet_first;
 #define ACCDET_INIT_WAIT_TIMER (10 * HZ)
@@ -172,6 +180,10 @@ static void delay_init_timerhandler(struct timer_list *t);
 #define MICBIAS_DISABLE_TIMER (6 * HZ)
 static struct timer_list micbias_timer;
 static void dis_micbias_timerhandler(struct timer_list *t);
+#define ACCDET_OPEN_CABLE_TIMER   (1 * HZ)
+static struct timer_list  accdet_open_cable_timer;
+static void check_open_cable_timerhandler(struct timer_list *t);
+static int moisture_ver = 0xff;
 static bool dis_micbias_done;
 static char accdet_log_buf[1280];
 static bool debug_thread_en;
@@ -187,6 +199,11 @@ static void accdet_init_debounce(void);
 static void config_eint_init_by_mode(void);
 static u32 get_triggered_eint(void);
 static void send_status_event(u32 cable_type, u32 status);
+static inline void check_cable_type(void);
+#if NO_USE_COMPARATOR
+static unsigned int check_pole_type(void);
+#endif
+
 /* global function declaration */
 inline u32 accdet_read(u32 addr)
 {
@@ -288,6 +305,8 @@ static void cat_register(char *buf)
 
 	ret = sprintf(accdet_log_buf, "[Accdet EINTx support][MODE_%d]regs:\n",
 		accdet_dts.mic_mode);
+	if (ret < 0)
+		pr_notice("sprintf failed\n");
 	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 
 	st_addr = RG_AUDACCDETRSV_ADDR;
@@ -300,17 +319,23 @@ static void cat_register(char *buf)
 		idx+2, accdet_read(idx+2),
 		idx+4, accdet_read(idx+4),
 		idx+6, accdet_read(idx+6));
+		if (ret < 0)
+			pr_notice("sprintf failed\n");
 		strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 	}
 
 	ret = sprintf(accdet_log_buf, "[0x%x]=0x%x\n",
 		RG_RTC32K_CK_PDN_ADDR,
 		accdet_read(RG_RTC32K_CK_PDN_ADDR));
+	if (ret < 0)
+		pr_notice("sprintf failed\n");
 	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 
 	ret = sprintf(accdet_log_buf, "[0x%x]=0x%x\n",
 		RG_ACCDET_RST_ADDR,
 		accdet_read(RG_ACCDET_RST_ADDR));
+	if (ret < 0)
+		pr_notice("sprintf failed\n");
 	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 
 	ret = sprintf(accdet_log_buf, "[0x%x]=0x%x, [0x%x]=0x%x, [0x%x]=0x%x\n",
@@ -320,6 +345,8 @@ static void cat_register(char *buf)
 		accdet_read(RG_INT_MASK_ACCDET_ADDR),
 		RG_INT_STATUS_ACCDET_ADDR,
 		accdet_read(RG_INT_STATUS_ACCDET_ADDR));
+	if (ret < 0)
+		pr_notice("sprintf failed\n");
 	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 
 	ret = sprintf(accdet_log_buf, "[0x%x]=0x%x, [0x%x]=0x%x\n",
@@ -327,15 +354,17 @@ static void cat_register(char *buf)
 		accdet_read(AUXADC_RQST_CH5_ADDR),
 		AUXADC_ACCDET_AUTO_SPL_ADDR,
 		accdet_read(AUXADC_ACCDET_AUTO_SPL_ADDR));
+	if (ret < 0)
+		pr_notice("sprintf failed\n");
 	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 
 	ret = sprintf(accdet_log_buf,
 		"dtsInfo:deb0=0x%x,deb1=0x%x,deb3=0x%x,deb4=0x%x\n",
 		 cust_pwm_deb->debounce0, cust_pwm_deb->debounce1,
 		 cust_pwm_deb->debounce3, cust_pwm_deb->debounce4);
-	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 	if (ret < 0)
 		pr_notice("sprintf failed\n");
+	strncat(buf, accdet_log_buf, strlen(accdet_log_buf));
 }
 
 static int dbug_thread(void *unused)
@@ -816,6 +845,13 @@ static void send_status_event(u32 cable_type, u32 status)
 				SND_JACK_MICROPHONE);
 		pr_info("accdet MICROPHONE(4-pole) %s\n",
 			status ? "PlugIn" : "PlugOut");
+		/* when press key for a long time then plug in
+		 * even recoginized as 4-pole
+		 * disable micbias timer still timeout after 6s
+		 * it check AB=00(because keep to press key) then disable
+		 * micbias, it will cause key no response
+		 */
+		del_timer_sync(&micbias_timer);
 		break;
 	case LINE_OUT_DEVICE:
 		if (status)
@@ -1121,6 +1157,14 @@ static void eint_work_callback(struct work_struct *work)
 				ACCDET_CMP_PWM_EN_SFT, 0x7, 0x7);
 
 		enable_accdet(0);
+#if NO_USE_COMPARATOR
+		mdelay(180);/* may be need delay more, relevant to Bias vol. */
+		check_cable_type();
+		if (accdet->accdet_status == MIC_BIAS)
+			accdet->cali_voltage = accdet_get_auxadc();
+		mod_timer(&accdet_open_cable_timer,
+			jiffies + ACCDET_OPEN_CABLE_TIMER);
+#endif
 	} else {
 		mutex_lock(&accdet->res_lock);
 		accdet->eint_sync_flag = false;
@@ -1179,13 +1223,41 @@ void accdet_set_debounce(int state, unsigned int debounce)
 	}
 }
 
+#if NO_USE_COMPARATOR
+static unsigned int check_pole_type(void)
+{
+	unsigned int vol = 0;
+
+	vol = accdet_get_auxadc();
+	if ((vol < (cust_vol_set.vol_max_4pole + 1)) &&
+		(vol > (cust_vol_set.vol_min_4pole - 1))) {
+		pr_notice("[accdet] pole check:%d mv, AB=%d\n",
+			vol, TYPE_AB_01);
+		return TYPE_AB_01;
+	} else if ((vol < (cust_vol_set.vol_max_3pole + 1)) &&
+			(vol > cust_vol_set.vol_min_3pole)) {
+		pr_notice("[accdet] pole check:%d mv, AB=%d\n",
+			vol, TYPE_AB_00);
+		return TYPE_AB_00;
+	}
+	/* illegal state */
+	pr_notice("[accdet] pole check:%d mv, AB=%d\n", vol, TYPE_AB_10);
+	return TYPE_AB_10;
+}
+#endif
+
 static inline void check_cable_type(void)
 {
 	u32 cur_AB = 0;
 
+#if NO_USE_COMPARATOR
+	cur_AB = check_pole_type();
+	pr_notice("accdet %s(), cur_status:%s current AB = %d\n", __func__,
+		     accdet->accdet_status, cur_AB);
+#else
 	cur_AB = accdet_read(ACCDET_MEM_IN_ADDR) >> ACCDET_STATE_MEM_IN_OFFSET;
-		cur_AB = cur_AB & ACCDET_STATE_AB_MASK;
-
+	cur_AB = cur_AB & ACCDET_STATE_AB_MASK;
+#endif
 	accdet->button_status = 0;
 
 	switch (accdet->accdet_status) {
@@ -1304,7 +1376,8 @@ static void accdet_work_callback(struct work_struct *work)
 
 	mutex_lock(&accdet->res_lock);
 	if (accdet->eint_sync_flag) {
-		if (pre_cable_type != accdet->cable_type)
+		if ((pre_cable_type != accdet->cable_type) ||
+			(accdet->cable_type == HEADSET_MIC))
 			send_status_event(accdet->cable_type, 1);
 	}
 	mutex_unlock(&accdet->res_lock);
@@ -1483,6 +1556,8 @@ void accdet_irq_handle(void)
 	eint_sts = accdet_read(ACCDET_EINT0_MEM_IN_ADDR);
 
 	if ((irq_status & ACCDET_IRQ_MASK_SFT) && (eintID == 0)) {
+		/* delete open cable timer if normal HP in */
+		del_timer_sync(&accdet_open_cable_timer);
 		clear_accdet_int();
 		accdet_queue_work();
 		clear_accdet_int_check();
@@ -1540,6 +1615,15 @@ static irqreturn_t mtk_accdet_irq_handler_thread(int irq, void *data)
 	accdet_irq_handle();
 
 	return IRQ_HANDLED;
+}
+
+static void check_open_cable_timerhandler(struct timer_list *t)
+{
+	int ret;
+
+	ret = queue_work(accdet->accdet_workqueue, &accdet->accdet_work);
+	if (!ret)
+		pr_info("%s return:%d!\n", __func__, ret);
 }
 
 static irqreturn_t ex_eint_handler(int irq, void *data)
@@ -1640,6 +1724,9 @@ static int accdet_get_dts_data(void)
 	int pwm_deb[8] = {0};
 	int three_key[4] = {0};
 	u32 tmp = 0;
+#if NO_USE_COMPARATOR
+	unsigned int vol_thresh[5] = { 0 };
+#endif
 
 	node = of_find_matching_node(node, accdet_of_match);
 	if (!node) {
@@ -1647,6 +1734,10 @@ static int accdet_get_dts_data(void)
 			__func__);
 		return -1;
 	}
+
+	ret = of_property_read_u32(node, "moisture-ver", &moisture_ver);
+	if (ret)
+		moisture_ver = 0x2;
 
 	ret = of_property_read_u32(node,
 			"accdet-mic-vol", &accdet_dts.mic_vol);
@@ -1778,6 +1869,26 @@ static int accdet_get_dts_data(void)
 		/* eint use internal resister */
 		accdet_dts.eint_use_ext_res = 0x0;
 	}
+#if NO_USE_COMPARATOR
+	ret = of_property_read_u32_array(node, "headset-vol-threshold",
+			vol_thresh, ARRAY_SIZE(vol_thresh));
+	if (!ret)
+		memcpy(&cust_vol_set, vol_thresh, sizeof(vol_thresh));
+	else
+		pr_info("accdet get headset-vol-thrsh fail\n");
+
+	pr_info("[Accdet] min_3pole = %d, max_3pole = %d\n",
+		cust_vol_set.vol_min_3pole, cust_vol_set.vol_max_3pole);
+	pr_info("[Accdet] min_4pole = %d, max_4pole = %d\n",
+		cust_vol_set.vol_min_4pole, cust_vol_set.vol_max_4pole);
+	if (cust_vol_set.vol_bias > 2600) {
+		cust_vol_set.vol_bias = 2600;/* 2600mv */
+		pr_notice("[Accdet]bias vol set %d mv--->2600 mv\n",
+				cust_vol_set.vol_bias);
+	} else {
+		pr_info("[Accdet]bias vol set %d mv\n", cust_vol_set.vol_bias);
+	}
+#endif
 	return 0;
 }
 
@@ -1932,6 +2043,47 @@ void accdet_late_init(unsigned long data)
 }
 EXPORT_SYMBOL(accdet_late_init);
 
+int mtk_accdet_init(struct snd_soc_component *component)
+{
+	int ret = 0;
+	struct mt63xx_accdet_data *priv =
+			snd_soc_card_get_drvdata(component->card);
+	struct snd_soc_card *card = component->card;
+
+	/* Enable Headset and 4 Buttons Jack detection */
+	ret = snd_soc_card_jack_new(card,
+				    "Headset Jack",
+				    SND_JACK_HEADSET |
+				    SND_JACK_LINEOUT |
+				    SND_JACK_MECHANICAL,
+				    &priv->jack,
+				    NULL, 0);
+	if (ret) {
+		dev_err(card->dev, "Can't new Headset Jack %x\n", ret);
+		return ret;
+	}
+	accdet->jack.jack->input_dev->id.bustype = BUS_HOST;
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_1, KEY_VOLUMEDOWN);
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_3, KEY_VOICECOMMAND);
+
+	ret = snd_soc_component_set_jack(component, &priv->jack, NULL);
+	if (ret)
+		return ret;
+
+	return ret;
+}
+EXPORT_SYMBOL(mtk_accdet_init);
+
+int mtk_accdet_set_drvdata(struct snd_soc_card *card)
+{
+	snd_soc_card_set_drvdata(card, accdet);
+
+	return 0;
+}
+EXPORT_SYMBOL(mtk_accdet_set_drvdata);
+
 static void delay_init_work_callback(struct work_struct *work)
 {
 	accdet_init();
@@ -1966,17 +2118,8 @@ static int accdet_probe(struct platform_device *pdev)
 	if (!accdet)
 		return -ENOMEM;
 
-	accdet->base = 0;
 	accdet->data = (struct accdet_priv *)of_id->data;
 	accdet->pdev = pdev;
-	accdet->card.dev = &pdev->dev;
-	accdet->card.owner = THIS_MODULE;
-	ret = snd_soc_of_parse_card_name(&accdet->card, "accdet-name");
-	if (ret) {
-		dev_dbg(&pdev->dev, "Error: Parse card name failed (%d)\n",
-				ret);
-		return ret;
-	}
 
 	/* parse dts attributes */
 	ret = accdet_get_dts_data();
@@ -1995,31 +2138,12 @@ static int accdet_probe(struct platform_device *pdev)
 	mutex_init(&accdet->res_lock);
 
 	platform_set_drvdata(pdev, accdet);
-	snd_soc_card_set_drvdata(&accdet->card, accdet);
-	ret = devm_snd_soc_register_card(&pdev->dev, &accdet->card);
-	if (ret) {
-		dev_dbg(&pdev->dev, "Error: Register card failed (%d)\n",
-				ret);
-		return ret;
-	}
-	accdet->data->snd_card = accdet->card.snd_card;
-	ret = snd_soc_card_jack_new(&accdet->card,
-			accdet_jack_pins[0].pin,
-			accdet_jack_pins[0].mask,
-			&accdet->jack, accdet_jack_pins, 1);
-	if (ret) {
-		dev_dbg(&pdev->dev, "Error: New card jack failed (%d)\n",
-				ret);
-		return ret;
-	}
-	accdet->jack.jack->input_dev->id.bustype = BUS_HOST;
-	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_0, KEY_PLAYPAUSE);
-	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_1, KEY_VOLUMEDOWN);
-	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
-	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_3, KEY_VOICECOMMAND);
 
 	/* Important. must to register */
-	ret = snd_card_register(accdet->card.snd_card);
+	ret = devm_snd_soc_register_component(&pdev->dev, &accdet_soc_driver,
+			NULL, 0);
+	if (ret)
+		return ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	accdet->regmap = mt6397_chip->regmap;
@@ -2165,6 +2289,9 @@ static int accdet_probe(struct platform_device *pdev)
 	micbias_timer.expires = jiffies + MICBIAS_DISABLE_TIMER;
 	timer_setup(&accdet_init_timer, delay_init_timerhandler, 0);
 	accdet_init_timer.expires = jiffies + ACCDET_INIT_WAIT_TIMER;
+	timer_setup(&accdet_open_cable_timer,
+			check_open_cable_timerhandler, 0);
+	accdet_open_cable_timer.expires = jiffies + ACCDET_OPEN_CABLE_TIMER;
 
 	/* Create workqueue */
 	accdet->delay_init_workqueue =

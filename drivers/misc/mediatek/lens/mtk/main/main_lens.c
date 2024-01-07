@@ -31,6 +31,10 @@
 #include <linux/ktime.h>
 /* ------------------------- */
 
+#if defined(CONFIG_MACH_MT6779)
+#include <archcounter_timesync.h>
+#endif
+
 #include "lens_info.h"
 #include "lens_list.h"
 
@@ -81,6 +85,20 @@ static struct stAF_OisPosInfo OisPosInfo;
 static struct stAF_DrvList g_stAF_DrvList[MAX_NUM_OF_LENS] = {
 	{1, AFDRV_DW9718TAF, DW9718TAF_SetI2Cclient, DW9718TAF_Ioctl,
 	 DW9718TAF_Release, DW9718TAF_GetFileName, NULL},
+//+bug 612420,zhanghao2.wt,add,2020/12/24,add for n6 camera bring up
+    {1, AFDRV_GT9772AF, GT9772AF_SetI2Cclient, GT9772AF_Ioctl,
+     GT9772AF_Release, GT9772AF_GetFileName,NULL},
+    {1, AFDRV_JCT_GT9772AF, JCT_GT9772AF_SetI2Cclient, JCT_GT9772AF_Ioctl,
+     JCT_GT9772AF_Release, JCT_GT9772AF_GetFileName,NULL},
+//+bug 612420,zhanghao2.wt,add,2020/12/24,add for n6 camera bring up
+	//+bug 621775 liuxiangyin.wt, add, 2021/2/23, n21 1st supply main af TXD_S5K2P6_GT9769AF porting
+	{1, AFDRV_TXD_S5K2P6_GT9769AF, TXD_S5K2P6_GT9769AF_SetI2Cclient, TXD_S5K2P6_GT9769AF_Ioctl,
+	 TXD_S5K2P6_GT9769AF_Release, TXD_S5K2P6_GT9769AF_GetFileName, NULL},
+	//-bug 621775 liuxiangyin.wt, add, 2021/2/23, n21 1st supply main af TXD_S5K2P6_GT9769AF porting
+	//+bug 621775,lintaicheng.wt, add, 20210208, add for n21 AF bring up
+	{1, AFDRV_HLT_OV16B10_ZC535BAF, HLT_OV16B10_ZC535BAF_SetI2Cclient, HLT_OV16B10_ZC535BAF_Ioctl,
+	 HLT_OV16B10_ZC535BAF_Release, HLT_OV16B10_ZC535BAF_GetFileName, NULL},
+	//-bug 621775,lintaicheng.wt, add, 20210208, add for n21 AF bring up
 	{1, AFDRV_AK7371AF, AK7371AF_SetI2Cclient, AK7371AF_Ioctl,
 	 AK7371AF_Release, AK7371AF_GetFileName, NULL},
 	{1, AFDRV_BU6424AF, BU6424AF_SetI2Cclient, BU6424AF_Ioctl,
@@ -102,6 +120,12 @@ static struct stAF_DrvList g_stAF_DrvList[MAX_NUM_OF_LENS] = {
 	},
 	{1, AFDRV_DW9714AF, DW9714AF_SetI2Cclient, DW9714AF_Ioctl,
 	 DW9714AF_Release, DW9714AF_GetFileName, NULL},
+	//+bug 612420,huangguoyong.wt,add,2020/12/25,add for n6 camera af
+	{1, AFDRV_ZC535AF, ZC535AF_SetI2Cclient, ZC535AF_Ioctl,
+	 ZC535AF_Release, ZC535AF_GetFileName,NULL},
+	{1, AFDRV_JCT_DW9714VAF, JCT_DW9714VAF_SetI2Cclient, JCT_DW9714VAF_Ioctl,
+	 JCT_DW9714VAF_Release, JCT_DW9714VAF_GetFileName, NULL},
+	//-bug 612420,huangguoyong.wt,add,2020/12/25,add for n6 camera af
 	{1, AFDRV_DW9718SAF, DW9718SAF_SetI2Cclient, DW9718SAF_Ioctl,
 	 DW9718SAF_Release, DW9718SAF_GetFileName, NULL},
 	{1, AFDRV_DW9719TAF, DW9719TAF_SetI2Cclient, DW9719TAF_Ioctl,
@@ -118,6 +142,10 @@ static struct stAF_DrvList g_stAF_DrvList[MAX_NUM_OF_LENS] = {
 	 DW9839AF_Release, DW9839AF_GetFileName, NULL},
 	{1, AFDRV_FP5510E2AF, FP5510E2AF_SetI2Cclient, FP5510E2AF_Ioctl,
 	 FP5510E2AF_Release, FP5510E2AF_GetFileName, NULL},
+	{1, AFDRV_FP5519AF, FP5519AF_SetI2Cclient, FP5519AF_Ioctl,
+	 FP5519AF_Release, FP5519AF_GetFileName, NULL},
+	{1, AFDRV_FP5529AF, FP5529AF_SetI2Cclient, FP5529AF_Ioctl,
+	 FP5529AF_Release, FP5529AF_GetFileName, NULL},
 	{1, AFDRV_DW9718AF, DW9718AF_SetI2Cclient, DW9718AF_Ioctl,
 	 DW9718AF_Release, DW9718AF_GetFileName, NULL},
 	{1, AFDRV_GT9764AF, GT9764AF_SetI2Cclient, GT9764AF_Ioctl,
@@ -320,6 +348,8 @@ static long AF_SetMotorName(__user struct stAF_MotorName *pstMotorName)
 			   sizeof(struct stAF_MotorName)))
 		LOG_INF("copy to user failed when getting motor information\n");
 
+	stMotorName.uMotorName[sizeof(stMotorName.uMotorName) - 1] = '\0';
+
 	for (i = 0; i < MAX_NUM_OF_LENS; i++) {
 		if (g_stAF_DrvList[i].uEnable != 1)
 			break;
@@ -335,6 +365,51 @@ static long AF_SetMotorName(__user struct stAF_MotorName *pstMotorName)
 			break;
 		}
 	}
+	return i4RetValue;
+}
+
+
+static long AF_ControlParam(unsigned long a_u4Param)
+{
+	long i4RetValue = -1;
+	__user struct stAF_CtrlCmd *pCtrlCmd =
+			(__user struct stAF_CtrlCmd *)a_u4Param;
+	struct stAF_CtrlCmd CtrlCmd;
+
+	if (copy_from_user(&CtrlCmd, pCtrlCmd, sizeof(struct stAF_CtrlCmd)))
+		LOG_INF("copy to user failed\n");
+
+	switch (CtrlCmd.i8CmdID) {
+#if defined(CONFIG_MACH_MT6779)
+	case CONVERT_CCU_TIMESTAMP:
+		{
+		long long monotonicTime = 0;
+		long long hwTickCnt     = 0;
+
+		hwTickCnt     = CtrlCmd.i8Param[0];
+		monotonicTime = archcounter_timesync_to_monotonic(hwTickCnt);
+		/* do_div(monotonicTime, 1000); */ /* ns to us */
+		CtrlCmd.i8Param[0] = monotonicTime;
+
+		hwTickCnt     = CtrlCmd.i8Param[1];
+		monotonicTime = archcounter_timesync_to_monotonic(hwTickCnt);
+		/* do_div(monotonicTime, 1000); */ /* ns to us */
+		CtrlCmd.i8Param[1] = monotonicTime;
+		}
+		i4RetValue = 1;
+		break;
+#endif
+	default:
+		i4RetValue = -1;
+		break;
+	}
+
+	if (i4RetValue > 0) {
+		if (copy_to_user(pCtrlCmd, &CtrlCmd,
+			sizeof(struct stAF_CtrlCmd)))
+			LOG_INF("copy to user failed\n");
+	}
+
 	return i4RetValue;
 }
 
@@ -413,6 +488,8 @@ static long AF_Ioctl(struct file *a_pstFile, unsigned int a_u4Command,
 			   sizeof(struct stAF_MotorName)))
 		LOG_INF("copy to user failed when getting motor information\n");
 
+	stMotorName.uMotorName[sizeof(stMotorName.uMotorName) - 1] = '\0';
+
 	LOG_INF("GETDRVNAME : set driver name(%s)\n", stMotorName.uMotorName);
 
 	for (i = 0; i < MAX_NUM_OF_LENS; i++) {
@@ -487,6 +564,14 @@ static long AF_Ioctl(struct file *a_pstFile, unsigned int a_u4Command,
 					g_EnableTimer = 1;
 				}
 			}
+		}
+		break;
+
+	case AFIOC_X_CTRLPARA:
+		if (AF_ControlParam(a_u4Param) <= 0) {
+			if (g_pstAF_CurDrv)
+				i4RetValue = g_pstAF_CurDrv->pAF_Ioctl(
+					a_pstFile, a_u4Command, a_u4Param);
 		}
 		break;
 

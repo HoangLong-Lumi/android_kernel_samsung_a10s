@@ -14,15 +14,27 @@ void mdee_set_ex_start_str(struct ccci_fsm_ee *ee_ctl,
 {
 	u64 ts_nsec;
 	unsigned long rem_nsec;
+	int ret = 0;
 
-	if (type == MD_FORCE_ASSERT_BY_AP_MPU)
-		snprintf(ee_ctl->ex_mpu_string, MD_EX_MPU_STR_LEN,
+	if (type == MD_FORCE_ASSERT_BY_AP_MPU) {
+		ret = snprintf(ee_ctl->ex_mpu_string, MD_EX_MPU_STR_LEN,
 			"EMI MPU VIOLATION: %s", str);
+		if (ret < 0 || ret >= MD_EX_MPU_STR_LEN) {
+			CCCI_ERROR_LOG(ee_ctl->md_id, FSM,
+				"%s-%d:snprintf fail,ret = %d\n", __func__, __LINE__, ret);
+			return;
+		}
+	}
 	ts_nsec = local_clock();
 	rem_nsec = do_div(ts_nsec, 1000000000);
-	snprintf(ee_ctl->ex_start_time, MD_EX_START_TIME_LEN,
+	ret = snprintf(ee_ctl->ex_start_time, MD_EX_START_TIME_LEN,
 		"AP detect MDEE time:%5lu.%06lu\n",
 		(unsigned long)ts_nsec, rem_nsec / 1000);
+	if (ret < 0 || ret >= MD_EX_START_TIME_LEN) {
+		CCCI_ERROR_LOG(ee_ctl->md_id, FSM,
+			"%s-%d:snprintf fail,ret = %d\n", __func__, __LINE__, ret);
+		return;
+	}
 	CCCI_MEM_LOG_TAG(ee_ctl->md_id, FSM, "%s\n",
 		ee_ctl->ex_start_time);
 }
@@ -32,6 +44,11 @@ void fsm_md_bootup_timeout_handler(struct ccci_fsm_ee *ee_ctl)
 	struct ccci_mem_layout *mem_layout
 		= ccci_md_get_mem(ee_ctl->md_id);
 
+	if (mem_layout == NULL) {
+		CCCI_NORMAL_LOG(ee_ctl->md_id, FSM,
+			"invalid  mem_layout\n");
+		return;
+	}
 	CCCI_NORMAL_LOG(ee_ctl->md_id, FSM,
 		"Dump MD image memory\n");
 	ccci_mem_dump(ee_ctl->md_id,
@@ -77,6 +94,10 @@ void fsm_md_exception_stage(struct ccci_fsm_ee *ee_ctl, int stage)
 				SMEM_USER_RAW_MDSS_DBG);
 		struct ccci_modem *md = ccci_md_get_modem_by_id(ee_ctl->md_id);
 
+		if (mem_layout == NULL) {
+			CCCI_ERROR_LOG(md_id, FSM, "ccci_md_get_mem fail!\n");
+			return;
+		}
 		CCCI_ERROR_LOG(md_id, FSM, "MD exception stage 1!\n");
 #if defined(CONFIG_MTK_AEE_FEATURE)
 		tracing_off();
@@ -162,6 +183,7 @@ _dump_done:
 		struct ccci_smem_region *mdss_dbg
 			= ccci_md_get_smem_by_user_id(ee_ctl->md_id,
 				SMEM_USER_RAW_MDSS_DBG);
+		struct ccci_modem *md;
 
 		CCCI_ERROR_LOG(md_id, FSM, "MD exception stage 2!\n");
 		CCCI_MEM_LOG_TAG(md_id, FSM, "MD exception stage 2! ee=%x\n",
@@ -215,6 +237,24 @@ _dump_done:
 		}
 		CCCI_ERROR_LOG(md_id, FSM,
 			"MD exception stage 2:end\n");
+
+		md = ccci_md_get_modem_by_id(ee_ctl->md_id);
+		if (md == NULL) {
+			CCCI_ERROR_LOG(md_id, FSM,
+				"fail to get md struct-no any userful MD!!\n");
+			return;
+		}
+		if (md->ccci_drv_trigger_upload) {
+			CCCI_ERROR_LOG(md_id, FSM, "[md1] drv trigger panic\n");
+			drv_tri_panic_by_lvl(md_id);
+			return;
+		}
+		if (!ee_ctl->is_normal_ee_case) {
+			ee_ctl->is_normal_ee_case = 0;
+			CCCI_ERROR_LOG(md_id, FSM,
+				"[md1] EE time out case, call panic\n");
+			drv_tri_panic_by_lvl(md_id);
+		}
 	}
 }
 
@@ -292,6 +332,8 @@ void fsm_ee_message_handler(struct ccci_fsm_ee *ee_ctl, struct sk_buff *skb)
 	} else if (ccci_h->data[1] == MD_EX_PASS) {
 		spin_lock_irqsave(&ee_ctl->ctrl_lock, flags);
 		ee_ctl->ee_info_flag |= MD_EE_PASS_MSG_GET;
+		/* dump share memory again to let MD check exception flow */
+		ee_ctl->is_normal_ee_case = 1;
 		spin_unlock_irqrestore(&ee_ctl->ctrl_lock, flags);
 		fsm_append_event(ctl, CCCI_EVENT_MD_EX_PASS, NULL, 0);
 	} else if (ccci_h->data[1] == CCCI_DRV_VER_ERROR) {

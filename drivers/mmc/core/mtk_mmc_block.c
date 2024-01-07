@@ -26,6 +26,7 @@
 #include <linux/exm_driver.h>
 #endif
 
+#include "queue.h"
 #include "mtk_mmc_block.h"
 #include <mt-plat/mtk_blocktag.h>
 
@@ -166,8 +167,15 @@ void mt_bio_queue_alloc(struct task_struct *thread, struct request_queue *q,
 		if (ext_sd_setup_done)
 			break;
 		/* bypass more emmc wokers */
+		#ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
+		/* SWCQ: 2 thread - exe_cq and kworker */
 		if ((i > 1) && !ext_sd)
 			break;
+		#else
+		/* CQHCI: only one thread - kworker */
+		if ((i > 0) && !ext_sd)
+			break;
+		#endif
 		if (ctx[i].pid == 0) {
 			if (ext_sd) {
 				ext_sd_setup_done = true;
@@ -214,10 +222,14 @@ static struct mt_bio_context *mt_bio_curr_queue(struct request_queue *q,
 	for (i = 0; i < MMC_BIOLOG_CONTEXTS; i++)	{
 		if (ctx[i].pid == 0)
 			continue;
-		if (!strncmp(ctx[i].comm, REQ_MMCQD0, strlen(REQ_MMCQD0)) ||
-			(qd_pid == ctx[i].pid) || (ctx[i].q && ctx[i].q == q)) {
-			return ext_sd ? &ctx[i+1] : &ctx[i];
-		}
+		if (!ext_sd && (!strncmp(ctx[i].comm, REQ_MMCQD0, strlen(REQ_MMCQD0)) ||
+		(qd_pid == ctx[i].pid) || (ctx[i].q && ctx[i].q == q)))
+			return &ctx[i];
+		/* It means hardcore ctx[2] or ctx[1] as SD card, it's not elegant */
+		else if ((i < 3) && ext_sd &&
+			(!strncmp(ctx[2-i].comm, REQ_MMCQD0, strlen(REQ_MMCQD0)) ||
+			(qd_pid == ctx[2-i].pid) || (ctx[2-i].q && ctx[2-i].q == q)))
+			return &ctx[2-i];
 	}
 	return NULL;
 }
@@ -239,17 +251,35 @@ static struct mt_bio_context *mt_bio_get_ctx(int id)
 
 /* append a pidlog to given context */
 int mtk_btag_pidlog_add_mmc(struct request_queue *q, pid_t pid, __u32 len,
-	int write, bool ext_sd)
+	int write)
 {
 	unsigned long flags;
 	struct mt_bio_context *ctx;
+	struct mmc_queue *mq = NULL;
+	struct mmc_host *host = NULL;
 
-	ctx = mt_bio_curr_queue(q, ext_sd);
-	if (!ctx)
+	if (q && q->queuedata) {
+		mq = (struct mmc_queue *)(q->queuedata);
+		host = mq ? mq->card->host : 0;
+	}
+
+	if (!host)
 		return 0;
 
-	spin_lock_irqsave(&ctx->lock, flags);
-	mtk_mq_btag_pidlog_insert(&ctx->pidlog, pid, len, write, ext_sd);
+	if (host->caps2 & MMC_CAP2_NO_SD) {
+		ctx = mt_bio_curr_queue(q, false);
+		if (!ctx)
+			return 0;
+		spin_lock_irqsave(&ctx->lock, flags);
+		mtk_mq_btag_pidlog_insert(&ctx->pidlog, pid, len, write, false);
+	} else if (host->caps2 & MMC_CAP2_NO_MMC) {
+		ctx = mt_bio_curr_queue(q, true);
+		if (!ctx)
+			return 0;
+		spin_lock_irqsave(&ctx->lock, flags);
+		mtk_mq_btag_pidlog_insert(&ctx->pidlog, pid, len, write, true);
+	} else
+		return 0;
 
 	if (ctx->qid == BTAG_STORAGE_EMBEDDED)
 		mtk_btag_mictx_eval_req(write, 1, len);
@@ -288,9 +318,8 @@ static void mt_bio_context_eval(struct mt_bio_context *ctx)
 		ctx->workload.percent = 1;
 	} else {
 		period = ctx->workload.period;
-		do_div(period, 100);
 		ctx->workload.percent =
-			(__u32)ctx->workload.usage / (__u32)period;
+		((__u32)ctx->workload.usage * 100) / (__u32)period;
 	}
 
 	mtk_btag_throughput_eval(&ctx->throughput);
@@ -656,30 +685,42 @@ void mt_biolog_cqhci_check(void)
 	mt_biolog_cmdq_check();
 }
 
-void mt_biolog_cqhci_queue_task(unsigned int task_id, struct mmc_request *req)
+/*
+ * parameter "host" needed due to req->host
+ * doesn't initial when enter here
+ */
+void mt_biolog_cqhci_queue_task(struct mmc_host *host,
+	unsigned int task_id, struct mmc_request *req)
 {
 	struct mt_bio_context *ctx;
 	struct mt_bio_context_task *tsk;
+	u32 req_flags;
 	unsigned long flags;
 
-	if (!req)
+	if (!req || !req->data)
 		return;
 
+	req_flags = req->data->flags;
+
 	tsk = mt_bio_curr_task_by_ctx_id(task_id,
-		&ctx, CTX_MMCCMDQD0, false);
+		&ctx, -1, false);
 	if (!tsk)
 		return;
 
 	spin_lock_irqsave(&ctx->lock, flags);
-
-#ifdef CONFIG_MTK_EMMC_HW_CQ
-	/* convert cqhci to legacy sbc arg */
-	tsk->arg = (!!(req->cmdq_req->cmdq_req_flags & DIR)) << 30 |
-		(req->cmdq_req->data.blocks & 0xFFFF);
-#else
-	if (req->sbc)
-		tsk->arg = req->sbc->arg;
-#endif
+	/* CANNOT used req->host here, it doesn't been initial when go here */
+	if (host && (host->caps2 & MMC_CAP2_CQE)) {
+		/* convert cqhci to legacy sbc arg */
+		if (req_flags & MMC_DATA_READ)
+			tsk->arg = 1 << 30 | (req->data->blocks & 0xFFFF);
+		else if (req_flags & MMC_DATA_WRITE) {
+			tsk->arg = (req->data->blocks & 0xFFFF);
+			tsk->arg = tsk->arg & ~(1 << 30);
+		}
+	} else {
+		if (req->sbc)
+			tsk->arg = req->sbc->arg;
+	}
 
 	tsk->t[tsk_req_start] = sched_clock();
 
@@ -705,7 +746,7 @@ void mt_biolog_cqhci_complete(unsigned int task_id)
 	unsigned long flags;
 
 	tsk = mt_bio_curr_task_by_ctx_id(task_id,
-		&ctx, CTX_MMCCMDQD0, false);
+		&ctx, -1, false);
 	if (!tsk)
 		return;
 
@@ -726,6 +767,14 @@ void mt_biolog_cqhci_complete(unsigned int task_id)
 	bytes = bytes << SECTOR_SHIFT;
 	busy_time = end_time - tsk->t[tsk_req_start];
 
+	/*
+	 * workaround: skip the IO which size is 0, please noted
+	 * that this issue doesn't exist in non-standard CQHCI driver,
+	 * it only happened in standard CQHCI driver.
+	 */
+	if (!bytes)
+		goto end;
+
 	tp = (write) ? &ctx->throughput.w : &ctx->throughput.r;
 	tp->usage += busy_time;
 	tp->size += bytes;
@@ -737,7 +786,7 @@ void mt_biolog_cqhci_complete(unsigned int task_id)
 
 	/* count doorbell to complete time in workload usage */
 	mt_bio_ctx_count_usage(ctx, tsk->t[tsk_req_start], end_time);
-
+end:
 	mt_pr_cmdq_tsk(tsk, tsk_isdone_end);
 
 	mt_bio_init_task(tsk);
@@ -911,6 +960,7 @@ static size_t mt_bio_seq_debug_show_info(char **buff, unsigned long *size,
 int mt_mmc_biolog_init(void)
 {
 	struct mtk_blocktag *btag;
+	struct mt_bio_context *ctx;
 
 	btag = mtk_btag_alloc("mmc",
 		MMC_BIOLOG_RINGBUF_MAX,
@@ -920,6 +970,10 @@ int mt_mmc_biolog_init(void)
 
 	if (btag)
 		mtk_btag_mmc = btag;
+
+	ctx = BTAG_CTX(mtk_btag_mmc);
+
+	memset(ctx, 0, sizeof(struct mt_bio_context) * MMC_BIOLOG_CONTEXTS);
 
 	return 0;
 }

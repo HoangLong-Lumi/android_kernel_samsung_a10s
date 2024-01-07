@@ -223,7 +223,10 @@ int mtk_spower_make_table(struct sptab_s *spt, int voltage, int degree,
 		/** occupy the free container**/
 		tspt = tab[spower_raw->table_size-3];
 #else /* #if defined(EXTER_POLATION) */
-		tspt = tab1 = tab2 = tab[spower_raw->table_size-1];
+		if (spower_raw->table_size - 1 >= 0)
+			tspt = tab1 = tab2 = tab[spower_raw->table_size-1];
+		else
+			tspt = tab1 = tab2 = tab[1];
 #endif /* #if defined(EXTER_POLATION) */
 
 		SPOWER_DEBUG("sptab max tab:%d/%d\n",  wat, c[i]);
@@ -490,16 +493,17 @@ int mt_spower_init(void)
 		err_flag = 1;
 		goto efuse_end;
 	}
-	pdev = of_device_alloc(node, NULL, NULL);
+	pdev = of_platform_device_create(node, NULL, NULL);
 	if (pdev == NULL) {
-		err_flag = 1;
+		pr_notice("%s fail to create pdev\n", __func__);
+		err_flag = 2;
 		goto efuse_end;
 	}
 	nvmem_dev = nvmem_device_get(&pdev->dev, "mtk_efuse");
 	if (IS_ERR(nvmem_dev)) {
 		pr_notice("%s failed to get mtk_efuse device\n",
 			__func__);
-		err_flag = 1;
+		err_flag = 3;
 		goto efuse_end;
 	}
 
@@ -509,7 +513,7 @@ efuse_end:
 
 	/* avoid side effect from multiple invocation */
 	if (tab_validate(&sptab[0]))
-		return 0;
+		goto init_end;
 
 #ifndef WITHOUT_LKG_EFUSE
 	for (i = 0; i < MTK_LEAKAGE_MAX; i++) {
@@ -579,6 +583,12 @@ efuse_end:
 		kfree(tab[i]);
 
 	mtSpowerInited = 1;
+
+init_end:
+	if (err_flag != 1 && pdev != NULL) {
+		of_platform_device_destroy(&pdev->dev, NULL);
+		of_dev_put(pdev);
+	}
 	return 0;
 }
 
@@ -589,6 +599,9 @@ module_init(mt_spower_init);
 int mt_spower_get_leakage(int dev, unsigned int vol, int deg)
 {
 	int ret;
+
+	if (dev < 0)
+		return 0;
 
 	if (!tab_validate(&sptab[dev]))
 		return 0;
@@ -615,10 +628,16 @@ int mt_spower_get_efuse_lkg(int dev)
 {
 	int id = 0;
 
-	if (dev >= MTK_SPOWER_MAX)
+	if (dev >= MTK_SPOWER_MAX || dev < 0)
 		return 0;
 
 	id = spower_raw[dev].leakage_id;
+
+	if (id < 0) {
+		pr_notice("%s get error lkg id\n", __func__);
+		return 0;
+	}
+
 	return spower_lkg_info[id].value;
 }
 EXPORT_SYMBOL(mt_spower_get_efuse_lkg);

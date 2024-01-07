@@ -42,7 +42,7 @@
 
 #if enable_code
 /*devapc related function is not supported in Kernel-4.19*/
-#if IS_ENABLED(CONFIG_MTK_DEVAPC)
+#if IS_ENABLED(CONFIG_MTK_DEVAPC) && !IS_ENABLED(CONFIG_DEVAPC_LEGACY)
 #include <mt-plat/devapc_public.h>
 #endif
 
@@ -121,6 +121,11 @@ static ssize_t gz_test_store(struct device *dev,
 	char tmp[50];
 	char c;
 	struct task_struct *th;
+
+	if (n > 50) {
+		KREE_DEBUG("err: n > 50\n");
+		return n;
+	}
 
 	strncpy(tmp, buf, 1);
 	tmp[n - 1] = '\0';
@@ -438,17 +443,6 @@ int mtee_sdsp_enable(u32 on)
 			on, 0, 0);
 }
 
-atomic_t get_gz_bind_cpu_allowed = ATOMIC_INIT(0);
-void set_gz_bind_cpu(int state)
-{
-	atomic_set(&get_gz_bind_cpu_allowed, state);
-}
-
-int get_gz_bind_cpu(void)
-{
-	return atomic_read(&get_gz_bind_cpu_allowed);
-}
-
 int gz_get_cpuinfo_thread(void *data)
 {
 #ifdef MTK_PPM_SUPPORT
@@ -525,6 +519,9 @@ int gz_get_cpuinfo_thread(void *data)
 	//wakeup_source_init(&TeeServiceCall_wake_lock, "KREE_TeeServiceCall");
 
 	/*kernel-4.19*/
+	if (IS_ERR_OR_NULL(tz_system_dev))
+		return TZ_RESULT_ERROR_GENERIC;
+
 	TeeServiceCall_wake_lock =
 		wakeup_source_register(
 		tz_system_dev->dev.parent, "KREE_TeeServiceCall");
@@ -900,10 +897,8 @@ static long tz_client_tee_service(struct file *file, unsigned long arg,
 		}
 	}
 
-	KREE_SESSION_LOCK(handle);
 	ret = KREE_TeeServiceCall(handle, cparam.command, cparam.paramTypes,
 			param);
-	KREE_SESSION_UNLOCK(handle);
 
 	cparam.ret = ret;
 	tmpTypes = cparam.paramTypes;
@@ -1000,7 +995,7 @@ static long _sc_test_cp_chm2shm(struct file *filep, unsigned long arg)
 	/* copy param from user */
 	ret = copy_from_user(&cparam, (void *)arg, sizeof(cparam));
 
-	if (ret < 0) {
+	if (ret) {
 		KREE_ERR("%s: copy_from_user failed(%d)\n", __func__, ret);
 		return ret;
 	}
@@ -1040,7 +1035,7 @@ static long _sc_test_upt_chmdata(struct file *filep, unsigned long arg)
 	/* copy param from user */
 	ret = copy_from_user(&cparam, (void *)arg, sizeof(cparam));
 
-	if (ret < 0) {
+	if (ret) {
 		KREE_ERR("%s: copy_from_user failed(%d)\n", __func__, ret);
 		return ret;
 	}
@@ -1152,8 +1147,8 @@ static TZ_RESULT _reg_shmem_from_userspace(
 
 	pin->pageArray = NULL;
 	cret = _map_user_pages(pin,
-			untagged_addr((unsigned long)(*shm_data).param.buffer),
-			(*shm_data).param.size, 0);
+		untagged_addr((unsigned long)(*shm_data).param.buffer),
+		(*shm_data).param.size, 0);
 	if (cret) {
 		pin->pageArray = NULL;
 		KREE_DEBUG("[%s]_map_user_pages fail. map user pages = 0x%x\n",
@@ -1210,7 +1205,7 @@ static TZ_RESULT _reg_shmem_from_userspace(
 	KREE_DEBUG("[%s]reg shmem ret hd=0x%x\n", __func__, *shm_handle);
 	if ((cret != TZ_RESULT_SUCCESS) || (*shm_handle == 0)) {
 		KREE_ERR("[%s]RegisterSharedmem fail\n", __func__);
-		KREE_ERR("ret=0x%x, shm_hd=0x%x)\n", cret, *shm_handle);
+		KREE_ERR("ret=0x%lx, shm_hd=0x%x)\n", cret, *shm_handle);
 	}
 
 	/*after reg. shmem, free PA list array*/
@@ -1237,6 +1232,48 @@ us_map_fail:
 	return cret;
 }
 
+int gz_adjust_task_attr(struct trusty_task_attr *manual_task_attr)
+{
+	if (IS_ERR_OR_NULL(tz_system_dev)) {
+		KREE_ERR("GZ KREE is still not initialized!\n");
+		return -EINVAL;
+	}
+
+	return trusty_adjust_task_attr(tz_system_dev->dev.parent, manual_task_attr);
+}
+
+TZ_RESULT gz_manual_adjust_trusty_wq_attr(char __user *user_req)
+{
+	int err;
+	char str[32];
+	struct trusty_task_attr manual_task_attr;
+
+	err = copy_from_user(&str, user_req, sizeof(str));
+	if (err) {
+		KREE_ERR("[%s]copy_from_user fail(0x%x)\n", __func__,
+			err);
+		return err;
+	}
+	str[31] = '\0';
+	KREE_DEBUG("%s cmd=%s\n", __func__, str);
+
+	memset(&manual_task_attr, 0, sizeof(manual_task_attr));
+	err = sscanf(str, "0x%x %d 0x%x %d",
+			&manual_task_attr.mask[TRUSTY_TASK_KICK_ID],
+			&manual_task_attr.pri[TRUSTY_TASK_KICK_ID],
+			&manual_task_attr.mask[TRUSTY_TASK_CHK_ID],
+			&manual_task_attr.pri[TRUSTY_TASK_CHK_ID]);
+	if (err != 4)
+		return -EINVAL;
+
+	KREE_DEBUG("%s 0x%x %d 0x%x %d\n", __func__,
+		manual_task_attr.mask[TRUSTY_TASK_KICK_ID],
+		manual_task_attr.pri[TRUSTY_TASK_KICK_ID],
+		manual_task_attr.mask[TRUSTY_TASK_CHK_ID],
+		manual_task_attr.pri[TRUSTY_TASK_CHK_ID]);
+
+	return gz_adjust_task_attr(&manual_task_attr);
+}
 
 static long _gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg,
 	unsigned int compat)
@@ -1263,7 +1300,7 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg,
 		KREE_DEBUG("[%s]cmd=MTEE_CMD_SHM_REG(0x%x)\n", __func__, cmd);
 		/* copy param from user */
 		err = copy_from_user(&shm_data, user_req, sizeof(shm_data));
-		if (err < 0) {
+		if (err) {
 			KREE_ERR("[%s]copy_from_user fail(0x%x)\n", __func__,
 				err);
 			return err;
@@ -1287,7 +1324,7 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg,
 		/* copy result back to user */
 		shm_data.session = ret;
 		err = copy_to_user(user_req, &shm_data, sizeof(shm_data));
-		if (err < 0) {
+		if (err) {
 			KREE_ERR("[%s]copy_to_user fail(0x%x)\n", __func__,
 				err);
 			return err;
@@ -1339,7 +1376,7 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg,
 		KREE_DEBUG("[%s]cmd=MTEE_CMD_SC_CHMEM_HANDLE(0x%x)\n", __func__,
 			cmd);
 		err = copy_from_user(&cparam, user_req, sizeof(cparam));
-		if (err < 0) {
+		if (err) {
 			KREE_ERR("[%s]copy_from_user fail(0x%x)\n", __func__,
 				err);
 			return err;
@@ -1353,7 +1390,7 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg,
 			return ret;
 		}
 		err = copy_to_user(user_req, &cparam, sizeof(cparam));
-		if (err < 0) {
+		if (err) {
 			KREE_ERR("[%s]copy_to_user fail(0x%x)\n", __func__,
 				err);
 			return err;
@@ -1372,6 +1409,10 @@ static long _gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg,
 		break;
 #endif
 
+	case MTEE_CMD_ADJUST_WQ_ATTR:
+		ret = gz_manual_adjust_trusty_wq_attr(user_req);
+		break;
+
 	default:
 		KREE_ERR("[%s] undefined ioctl cmd 0x%x\n", __func__, cmd);
 		ret = -EINVAL;
@@ -1385,9 +1426,7 @@ static long gz_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
 	long ret;
 
-	set_gz_bind_cpu(1);
 	ret = _gz_ioctl(filep, cmd, arg, 0);
-	set_gz_bind_cpu(0);
 	return ret;
 }
 
@@ -1397,55 +1436,14 @@ static long gz_compat_ioctl(struct file *filep, unsigned int cmd,
 {
 	long ret;
 
-	set_gz_bind_cpu(1);
 	ret = _gz_ioctl(filep, cmd, arg, 1);
-	set_gz_bind_cpu(0);
 	return ret;
 }
 #endif
 
-static int find_big_core(int *big_core_first, int *big_core_last)
-{
-	struct device_node *cpus = NULL, *cpu = NULL;
-	struct property *cpu_pp = NULL;
-
-	int cpu_num = 0, big_start_num = 0, big_type = 0, cpu_type = 0;
-	char *compat_val;
-	int compat_len, i;
-
-	cpus = of_find_node_by_path("/cpus");
-	if (cpus == NULL)
-		return -1;
-
-	for_each_child_of_node(cpus, cpu) {
-		if (of_node_cmp(cpu->type, "cpu"))
-			continue;
-
-		cpu_num++;
-
-		for_each_property_of_node(cpu, cpu_pp) {
-			if (strcmp(cpu_pp->name, "compatible") == 0) {
-				compat_val = (char *)cpu_pp->value;
-				compat_len = strlen(compat_val);
-				i = kstrtoint(compat_val + (compat_len - 2), 10,
-					      &cpu_type);
-				if (big_type < cpu_type) {
-					big_type = cpu_type;
-					big_start_num = cpu_num - 1;
-				}
-			}
-		}
-	}
-
-	*big_core_first = big_start_num;
-	*big_core_last = cpu_num - 1;
-
-	return 0;
-}
-
 #if enable_code
 
-#if IS_ENABLED(CONFIG_MTK_DEVAPC)
+#if IS_ENABLED(CONFIG_MTK_DEVAPC) && !IS_ENABLED(CONFIG_DEVAPC_LEGACY)
 static void gz_devapc_vio_dump(void)
 {
 	pr_debug("%s:%d GZ devapc is triggered!\n", __func__, __LINE__);
@@ -1481,31 +1479,6 @@ static int __init gz_init(void)
 	} else {
 		struct task_struct *gz_get_cpuinfo_task;
 		struct task_struct *ree_dummy_task;
-		int big_core_first = 1;
-		int big_core_last = 1;
-		int ret = 0;
-		struct cpumask ree_dummy_cmask;
-
-		cpumask_clear(&trusty_all_cmask);
-		cpumask_setall(&trusty_all_cmask);
-		cpumask_clear(&trusty_big_cmask);
-		cpumask_clear(&ree_dummy_cmask);
-
-		ret = find_big_core(&big_core_first, &big_core_last);
-		if (ret)
-			KREE_ERR("no any big core\n");
-
-		if (2 == (big_core_last-big_core_first+1)) {
-			cpumask_set_cpu(6, &trusty_big_cmask);
-			cpumask_set_cpu(7, &ree_dummy_cmask);
-		} else if (4 == (big_core_last-big_core_first+1)) {
-			cpumask_set_cpu(4, &ree_dummy_cmask);
-			cpumask_set_cpu(5, &trusty_big_cmask);
-			cpumask_set_cpu(6, &trusty_big_cmask);
-		} else {
-			cpumask_set_cpu(0, &trusty_big_cmask);
-			cpumask_set_cpu(1, &ree_dummy_cmask);
-		}
 
 		gz_get_cpuinfo_task =
 		    kthread_create(gz_get_cpuinfo_thread, NULL,
@@ -1524,7 +1497,6 @@ static int __init gz_init(void)
 				__func__);
 			res = PTR_ERR(ree_dummy_task);
 		} else {
-			set_cpus_allowed_ptr(ree_dummy_task, &ree_dummy_cmask);
 			set_user_nice(ree_dummy_task, -20);
 			wake_up_process(ree_dummy_task);
 		}
@@ -1532,7 +1504,7 @@ static int __init gz_init(void)
 
 #if enable_code
 
-#if IS_ENABLED(CONFIG_MTK_DEVAPC)
+#if IS_ENABLED(CONFIG_MTK_DEVAPC) && !IS_ENABLED(CONFIG_DEVAPC_LEGACY)
 	register_devapc_vio_callback(&gz_devapc_vio_handle);
 #endif
 

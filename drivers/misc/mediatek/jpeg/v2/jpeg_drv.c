@@ -125,6 +125,8 @@
 #include "mmdvfs_pmqos.h"
 #endif
 
+#include <ion_drv.h>
+
 /* -------------------------------------------------------------------------- */
 /*  */
 /* -------------------------------------------------------------------------- */
@@ -199,6 +201,9 @@ static unsigned int cshot_spec_dts;
 
 /* Support QoS */
 struct mtk_pm_qos_request jpgenc_qos_request;
+
+static struct ion_client *g_jpeg_ion_client;
+
 
 /* ========================================== */
 /* CMDQ */
@@ -478,10 +483,14 @@ void jpeg_drv_enc_power_on(void)
 		#endif
 	#endif
 #endif
+	enable_irq(gJpegqDev.encIrqId);
+
 }
 
 void jpeg_drv_enc_power_off(void)
 {
+
+	disable_irq(gJpegqDev.encIrqId);
 #ifdef CONFIG_MTK_CLKMGR
 	#ifdef CONFIG_ARCH_MT6735M
 		disable_clock(MT_CG_IMAGE_JPGENC, "JPEG");
@@ -1044,18 +1053,22 @@ static int jpeg_enc_ioctl(unsigned int cmd, unsigned long arg,
 		}
 
 		/* 2. set src buffer info */
-		JPEG_MSG("[JPEGDRV]SRC_BUF: addr %x, %x, stride %x, %x!!\n",
+		JPEG_MSG("[JPEGDRV]SRC_BUF: addr %x, %x, stride %x, %x fd %d %d!!\n",
 			 cfgEnc.srcBufferAddr,
 			 cfgEnc.srcChromaAddr,
 			 cfgEnc.imgStride,
-			 cfgEnc.memStride);
+			 cfgEnc.memStride,
+			 cfgEnc.srcFd,
+			 cfgEnc.srcFd2);
 
 		ret =
-		    jpeg_drv_enc_set_src_buf(cfgEnc.encFormat,
+		    jpeg_drv_enc_set_src_buf(g_jpeg_ion_client,
+						 cfgEnc.encFormat,
 					     cfgEnc.imgStride,
 					     cfgEnc.memStride,
-					     cfgEnc.srcBufferAddr,
-					     cfgEnc.srcChromaAddr);
+					     cfgEnc.memHeight,
+					     cfgEnc.srcFd,
+					     cfgEnc.srcFd2);
 		if (ret == 0) {
 			JPEG_MSG("[JPGDRV]Enc set srouce buffer failed\n");
 			return -EFAULT;
@@ -1068,14 +1081,17 @@ static int jpeg_enc_ioctl(unsigned int cmd, unsigned long arg,
 		/* } */
 
 		/* 3. set dst buffer info */
-		JPEG_MSG("[JPGDRV]DST_BUF: addr:%x, size:%x, ofs:%x, mask:%x\n",
+		JPEG_MSG("[JPGDRV]DST_BUF: addr:%x, size:%x, ofs:%x, mask:%x Fd 0x%x\n",
 			 cfgEnc.dstBufferAddr,
 			 cfgEnc.dstBufferSize,
 			 cfgEnc.dstBufAddrOffset,
-			 cfgEnc.dstBufAddrOffsetMask);
+			 cfgEnc.dstBufAddrOffsetMask,
+			 cfgEnc.dstFd);
+
 
 		ret =
-		    jpeg_drv_enc_set_dst_buff(cfgEnc.dstBufferAddr,
+		    jpeg_drv_enc_set_dst_buff(g_jpeg_ion_client,
+						  cfgEnc.dstFd,
 					      cfgEnc.dstBufferSize,
 					      cfgEnc.dstBufAddrOffset,
 					      cfgEnc.dstBufAddrOffsetMask);
@@ -1739,7 +1755,6 @@ static int jpeg_probe(struct platform_device *pdev)
 
 	/* mt6575_irq_unmask(MT6575_JPEG_CODEC_IRQ_ID); */
 	JPEG_MSG("request JPEG Encoder IRQ\n");
-	enable_irq(gJpegqDev.encIrqId);
 	if (request_irq(gJpegqDev.encIrqId,
 		 jpeg_drv_enc_isr, IRQF_TRIGGER_LOW,
 		 "jpeg_enc_driver", NULL))
@@ -1895,6 +1910,11 @@ static int __init jpeg_init(void)
 	Driver_Open_Count = 0;
 	jpeg_drv_enc_prepare_bw_request();
 
+	if (!g_jpeg_ion_client && g_ion_device) {
+		JPEG_MSG("create ion client\n");
+		g_jpeg_ion_client = ion_client_create(g_ion_device, "jpegenc");
+	}
+
 	return 0;
 }
 
@@ -1929,6 +1949,10 @@ static void __exit jpeg_exit(void)
 	JPEG_MSG("%s jdec remove\n", __func__);
 #endif
 	jpegenc_drv_enc_remove_bw_request();
+
+	if (g_jpeg_ion_client)
+		ion_client_destroy(g_jpeg_ion_client);
+	g_jpeg_ion_client = NULL;
 	JPEG_MSG("%s -\n", __func__);
 }
 module_init(jpeg_init);

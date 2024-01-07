@@ -71,10 +71,6 @@ typedef int (*ipi_handler_t)(void *data,
  *                      handle MPEG4 video decoder job, and vice versa.
  *                      Decode output format is always MT21 no matter what
  *                      the input format is.
- * @IPI_VDEC_DIVX3:     The interrupt from vcu is to notify kernel to
- *                      handle DIVX3 video decoder job, and vice versa.
- *                      Decode output format is always MT21 no matter what
- *                      the input format is.
  * @IPI_VDEC_MPEG12:    The interrupt from vcu is to notify kernel to
  *                      handle MPEG1/2 video decoder job, and vice versa.
  *                      Decode output format is always MT21 no matter what
@@ -126,9 +122,6 @@ enum ipi_id {
 	IPI_VDEC_H263,
 	IPI_VDEC_S263,
 	IPI_VDEC_XVID,
-	IPI_VDEC_DIVX3,
-	IPI_VDEC_DIVX4,
-	IPI_VDEC_DIVX5,
 	IPI_VDEC_MPEG12,
 	IPI_VDEC_WMV,
 	IPI_VDEC_RV30,
@@ -277,6 +270,8 @@ int vcu_get_sig_lock(unsigned long *flags);
 void vcu_put_sig_lock(unsigned long flags);
 int vcu_check_vpud_alive(void);
 extern void smp_inner_dcache_flush_all(void);
+int vcu_get_ctx_ipi_binding_lock(struct platform_device *pdev,
+	struct mutex **mutex, unsigned long type);
 int vcu_set_codec_ctx(struct platform_device *pdev,
 		 void *codec_ctx, struct vb2_buffer *src_vb,
 		 struct vb2_buffer *dst_vb, unsigned long type);

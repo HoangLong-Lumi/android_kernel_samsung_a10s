@@ -86,7 +86,7 @@ enum pe4_state_enum {
 	PE4_HW_FAIL,
 	PE4_HW_READY,
 	PE4_TA_NOT_SUPPORT,
-	PE4_STOP,
+	PE4_INIT,
 	PE4_RUN,
 	PE4_TUNING,
 	PE4_POSTCC,
@@ -235,5 +235,6 @@ extern int pe4_hal_set_cv(struct chg_alg_device *alg,
 	enum chg_idx chgidx, u32 uv);
 extern int pe4_hal_enable_termination(struct chg_alg_device *alg,
 	enum chg_idx chgidx, bool enable);
+extern int pe4_hal_reset_eoc_state(struct chg_alg_device *alg);
 #endif /* __MTK_PE4_H */
 

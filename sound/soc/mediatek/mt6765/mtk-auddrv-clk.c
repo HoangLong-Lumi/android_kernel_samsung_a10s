@@ -234,6 +234,8 @@ static int audio_idle_notify_call(struct notifier_block *nfb,
 				  unsigned long id,
 				  void *arg)
 {
+	if (!aud_clks[CLOCK_MUX_AUDIOINTBUS].clk_prepare)
+		return NOTIFY_OK;
 
 	switch (id) {
 	case NOTIFY_DPIDLE_ENTER:
@@ -307,8 +309,6 @@ void AudDrv_AUDINTBUS_Sel(int parentidx)
 
 	clksys_set_reg(AUDIO_CLK_CFG_4_CLR, 0x3, 0x3);
 	clksys_set_reg(AUDIO_CLK_CFG_4_SET, parentidx, 0x3);
-	pr_debug("%s(), parentidx = %d, CLK_CFG_4 = 0x%08x\r\n",
-		 __func__, parentidx, clksys_get_reg(AUDIO_CLK_CFG_4));
 
 EXIT:
 	/* pr_debug("-%s()\n", __func__); */
@@ -1119,7 +1119,7 @@ void AudDrv_APLL2Tuner_Clk_On(void)
 #else
 		Afe_Set_Reg(AUDIO_TOP_CON0, 0x0 << 18, 0x1 << 18);
 #endif
-		SetApmixedCfg(AP_PLL_CON3, 0x0, 0x1);
+		SetApmixedCfg(AP_PLL_CON3, 0x1, 0x1);
 	}
 	Aud_APLL2_Tuner_cntr++;
 EXIT:

@@ -46,44 +46,6 @@ static char *modules_info_buf;
 
 static bool dump_all_cpus;
 
-#ifdef MODULE
-static char __aee_cmdline[COMMAND_LINE_SIZE];
-static char *aee_cmdline = __aee_cmdline;
-
-const char *mrdump_get_cmd(void)
-{
-	struct file *fd;
-	mm_segment_t fs;
-	loff_t pos = 0;
-
-	if (__aee_cmdline[0] != 0)
-		return aee_cmdline;
-
-	fs = get_fs();
-	set_fs(KERNEL_DS);
-	fd = filp_open("/proc/cmdline", O_RDONLY, 0);
-	if (IS_ERR(fd)) {
-		pr_info("kedump: Unable to open /proc/cmdline (%ld)",
-			PTR_ERR(fd));
-		set_fs(fs);
-		return aee_cmdline;
-	}
-	vfs_read(fd, (void *)aee_cmdline, COMMAND_LINE_SIZE, &pos);
-	filp_close(fd, NULL);
-	fd = NULL;
-	set_fs(fs);
-	return aee_cmdline;
-}
-EXPORT_SYMBOL(mrdump_get_cmd);
-#else
-const char *mrdump_get_cmd(void)
-{
-	return saved_command_line;
-}
-EXPORT_SYMBOL(mrdump_get_cmd);
-
-#endif
-
 __weak void get_gz_log_buffer(unsigned long *addr, unsigned long *paddr,
 			unsigned long *size, unsigned long *start)
 {
@@ -116,9 +78,9 @@ __weak void get_pidmap_aee_buffer(unsigned long *addr, unsigned long *size)
 }
 
 #ifdef __aarch64__
-#define MIN_MARGIN KIMAGE_VADDR
+#define MIN_MARGIN VA_START
 #else
-#define MIN_MARGIN PAGE_OFFSET
+#define MIN_MARGIN MODULES_VADDR
 #endif
 
 #ifdef __aarch64__
@@ -130,10 +92,9 @@ static unsigned long virt_2_pfn(unsigned long addr)
 	pte_t *ptep, _pte_val = {0};
 	unsigned long pfn = ~0UL;
 
-#ifdef CONFIG_ARM64
 	if (addr < VA_START)
 		goto OUT;
-#endif
+
 	if (probe_kernel_address(pgd, _pgd_val) || pgd_none(_pgd_val))
 		goto OUT;
 	pud = pud_offset(pgd, addr);
@@ -297,7 +258,7 @@ static int fill_psinfo(struct elf_prpsinfo *psinfo)
 {
 	unsigned int i;
 
-	strncpy(psinfo->pr_psargs, mrdump_get_cmd(), ELF_PRARGSZ - 1);
+	strncpy(psinfo->pr_psargs, "vmlinux", ELF_PRARGSZ - 1);
 	for (i = 0; i < ELF_PRARGSZ - 1; i++)
 		if (psinfo->pr_psargs[i] == 0)
 			psinfo->pr_psargs[i] = ' ';
@@ -445,7 +406,7 @@ static void mrdump_mini_add_tsk_ti(int cpu, struct pt_regs *regs,
 	unsigned long *p;
 
 	if (!mrdump_virt_addr_valid(tsk)) {
-		pr_notice("mrdump: cpu:[%d] invalid task pointer:%p\n",
+		pr_notice("mrdump: cpu:[%d] invalid task pointer:0x%lx\n",
 				cpu, tsk);
 		if (cpu < num_possible_cpus())
 			tsk = aee_cpu_curr(cpu);
@@ -454,7 +415,7 @@ static void mrdump_mini_add_tsk_ti(int cpu, struct pt_regs *regs,
 					cpu, num_possible_cpus());
 	}
 	if (!mrdump_virt_addr_valid(tsk))
-		pr_notice("mrdump: cpu:[%d] CAN'T get a valid task pointer:%p\n",
+		pr_notice("mrdump: cpu:[%d] CAN'T get a valid task pointer:%px\n",
 				cpu, tsk);
 	else
 		ti = (struct thread_info *)tsk->stack;
@@ -463,7 +424,7 @@ static void mrdump_mini_add_tsk_ti(int cpu, struct pt_regs *regs,
 	mrdump_mini_add_entry(regs->reg_sp, MRDUMP_MINI_SECTION_SIZE);
 	mrdump_mini_add_entry((unsigned long)ti, MRDUMP_MINI_SECTION_SIZE);
 	mrdump_mini_add_entry((unsigned long)tsk, MRDUMP_MINI_SECTION_SIZE);
-	pr_notice("mrdump: cpu[%d] tsk:%p ti:%p\n", cpu, tsk, ti);
+	pr_notice("mrdump: cpu[%d] tsk:0x%lx ti:0x%lx\n", cpu, tsk, ti);
 	if (!stack)
 		return;
 	if (ti == NULL)
@@ -545,7 +506,6 @@ void mrdump_mini_per_cpu_regs(int cpu, struct pt_regs *regs,
 {
 	mrdump_mini_cpu_regs(cpu, regs, tsk, 0);
 }
-EXPORT_SYMBOL(mrdump_mini_per_cpu_regs);
 
 static void mrdump_mini_build_task_info(struct pt_regs *regs)
 {
@@ -841,6 +801,14 @@ static void mrdump_mini_build_elf_misc(void)
 	get_pidmap_aee_buffer(&misc.vaddr, &misc.size);
 	misc.start = 0;
 	mrdump_mini_add_misc(misc.vaddr, misc.size, misc.start, "_PIDMAP_");
+
+#ifndef MODULE
+	memset_io(&misc, 0, sizeof(struct mrdump_mini_elf_misc));
+	misc.vaddr = (unsigned long)(void *)linux_banner;
+	misc.size = strlen(linux_banner);
+	misc.start = 0;
+	mrdump_mini_add_misc(misc.vaddr, misc.size, misc.start, "_VERSION_BR");
+#endif
 }
 
 static void mrdump_mini_add_loads(void)
@@ -945,7 +913,6 @@ void mrdump_mini_ke_cpu_regs(struct pt_regs *regs)
 	mrdump_modules_info(NULL, -1);
 	mrdump_mini_add_extra_misc();
 }
-EXPORT_SYMBOL(mrdump_mini_ke_cpu_regs);
 
 static void *remap_lowmem(phys_addr_t start, phys_addr_t size)
 {
@@ -1004,7 +971,7 @@ static void __init mrdump_mini_elf_header_init(void)
 	fill_elf_header(&mrdump_mini_ehdr->ehdr, MRDUMP_MINI_NR_SECTION);
 }
 
-int __init mrdump_mini_init(void)
+int __init mrdump_mini_init(const struct mrdump_params *mparams)
 {
 	int i;
 	unsigned long size, offset;
@@ -1041,12 +1008,10 @@ int __init mrdump_mini_init(void)
 			offsetof(struct mrdump_mini_elf_header, misc));
 
 	if (mrdump_cblock) {
-
 		mrdump_mini_add_entry_ext(
 		  (unsigned long)mrdump_cblock,
-		  (unsigned long)mrdump_cblock + mrdump_sram_cb.size,
-		  mrdump_sram_cb.start_addr
-		);
+		  (unsigned long)mrdump_cblock + mparams->cb_size,
+		  mparams->cb_addr);
 
 		mrdump_mini_add_entry(
 		  (unsigned long)mrdump_cblock,

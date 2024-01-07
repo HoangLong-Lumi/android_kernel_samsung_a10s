@@ -28,6 +28,7 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #endif
+#include <linux/syscore_ops.h>
 #include <linux/uaccess.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
@@ -102,8 +103,8 @@ static int scp_get_sub_feature_idx(enum subsys_enum sys_e,
 {
 	int i;
 
-	if ((sys_e < 0 || sys_e >= SYS_NUM)
-			&& (comp_e < 0 || comp_e >= SUB_FEATURE_NUM))
+	if ((sys_e < 0 || sys_e >= SYS_NUM) ||
+		(comp_e < 0 || comp_e >= SUB_FEATURE_NUM))
 		return -EINVAL;
 
 	for (i = 0; i < sd[sys_e].num; i++) {
@@ -114,7 +115,6 @@ static int scp_get_sub_feature_idx(enum subsys_enum sys_e,
 
 	if (i == SUB_FEATURE_NUM) {
 		pr_err("cannot find feature index\n");
-
 		return -EINVAL;
 	}
 
@@ -126,10 +126,13 @@ static struct sub_feature_data *scp_get_sub_feature(enum subsys_enum sys_e,
 {
 	int idx;
 
-	idx = scp_get_sub_feature_idx(sys_e, comp_e);
+	if ((sys_e < 0 || sys_e >= SYS_NUM) ||
+		(comp_e < 0 || comp_e >= SUB_FEATURE_NUM))
+		return NULL;
 
+	idx = scp_get_sub_feature_idx(sys_e, comp_e);
 	if (idx < 0)
-		return ERR_PTR(idx);
+		return NULL;
 
 	return &sd[sys_e].fd[idx];
 }
@@ -139,8 +142,11 @@ static int scp_get_sub_feature_onoff(enum subsys_enum sys_e,
 {
 	int idx;
 
-	idx = scp_get_sub_feature_idx(sys_e, comp_e);
+	if ((sys_e < 0 || sys_e >= SYS_NUM) ||
+		(comp_e < 0 || comp_e >= SUB_FEATURE_NUM))
+		return 0;
 
+	idx = scp_get_sub_feature_idx(sys_e, comp_e);
 	if (idx < 0)
 		return 0;
 
@@ -156,18 +162,20 @@ static unsigned int *scp_get_sub_register_cfg(enum subsys_enum sys_e,
 	unsigned int val = 0;
 	int i;
 
-	fd = scp_get_sub_feature(sys_e, comp_e);
+	if ((sys_e < 0 || sys_e >= SYS_NUM) ||
+		(comp_e < 0 || comp_e >= SUB_FEATURE_NUM))
+		return NULL;
 
+	fd = scp_get_sub_feature(sys_e, comp_e);
 	if (!fd) {
 		pr_err("fd is NULL\n");
-
-		return ERR_PTR(-EINVAL);
+		return NULL;
 	}
 
 	/* alloc memory for return cfg value */
 	ret = kcalloc(fd->num, sizeof(unsigned int), GFP_KERNEL);
 	if (!ret)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
 	for (i = 0; i < fd->num; i++) {
 		regmap_read(regmap, fd->reg[i].ofs, &val);
@@ -212,10 +220,13 @@ static int scp_set_sub_register_cfg(enum subsys_enum sys_e,
 	int ret = 0;
 	int i;
 
+	if ((sys_e < 0 || sys_e >= SYS_NUM) ||
+		(comp_e < 0 || comp_e >= SUB_FEATURE_NUM))
+		return -EINVAL;
+
 	fd = scp_get_sub_feature(sys_e, comp_e);
 	if (!fd) {
 		pr_err("fd is NULL\n");
-
 		return -EINVAL;
 	}
 
@@ -225,10 +236,10 @@ static int scp_set_sub_register_cfg(enum subsys_enum sys_e,
 		if (ret) {
 			pr_err("fail to set sub feature cfg[%d] : %d\n",
 					i, ret);
-			goto fail;
+			break;
 		}
 	}
-fail:
+
 	return ret;
 }
 
@@ -568,6 +579,39 @@ void scp_pll_ctrl_handler(int id, void *data, unsigned int len)
 	scp_pll_ctrl_set(*pll_ctrl_flag, *pll_sel);
 }
 
+void mt_scp_dvfs_state_dump(void)
+{
+	unsigned int scp_state;
+
+	scp_state = readl(SCP_A_SLEEP_DEBUG_REG);
+	printk_deferred("scp status: %s\n",
+		((scp_state & IN_DEBUG_IDLE) == IN_DEBUG_IDLE) ? "idle mode"
+		: ((scp_state & ENTERING_SLEEP) == ENTERING_SLEEP) ?
+			"enter sleep"
+		: ((scp_state & IN_SLEEP) == IN_SLEEP) ?
+			"sleep mode"
+		: ((scp_state & ENTERING_ACTIVE) == ENTERING_ACTIVE) ?
+			"enter active"
+		: ((scp_state & IN_ACTIVE) == IN_ACTIVE) ?
+			"active mode" : "none of state");
+}
+
+int mt_scp_dvfs_syscore_suspend(void)
+{
+	mt_scp_dvfs_state_dump();
+	return 0;
+}
+
+void mt_scp_dvfs_syscore_resume(void)
+{
+	mt_scp_dvfs_state_dump();
+}
+
+static struct syscore_ops mt_scp_dvfs_syscore_ops = {
+	.suspend = mt_scp_dvfs_syscore_suspend,
+	.resume = mt_scp_dvfs_syscore_resume,
+};
+
 #ifdef CONFIG_PROC_FS
 /*
  * PROC
@@ -626,12 +670,16 @@ static ssize_t mt_scp_dvfs_sleep_proc_write(
 {
 	char desc[64];
 	unsigned int val = 0;
-	int len = 0;
+	unsigned int len = 0;
 	int ret = 0;
+
+	if (count <= 0)
+		return 0;
 
 	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
 	if (copy_from_user(desc, buffer, len))
 		return 0;
+
 	desc[len] = '\0';
 
 	if (kstrtouint(desc, 10, &val) == 0) {
@@ -698,16 +746,18 @@ static ssize_t mt_scp_dvfs_ctrl_proc_write(
 					loff_t *data)
 {
 	char desc[64], cmd[32];
-	int len = 0;
+	unsigned int len = 0;
 	int dvfs_opp;
 	int freq;
 	int n;
 
-	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
-	if (len < 0)
+	if (count <= 0)
 		return 0;
+
+	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
 	if (copy_from_user(desc, buffer, len))
 		return 0;
+
 	desc[len] = '\0';
 
 	n = sscanf(desc, "%31s %d", cmd, &dvfs_opp);
@@ -1449,6 +1499,8 @@ int __init scp_dvfs_init(void)
 	mtk_pm_qos_add_request(&dvfsrc_scp_vcore_req,
 			MTK_PM_QOS_SCP_VCORE_REQUEST,
 			MTK_PM_QOS_SCP_VCORE_REQUEST_DEFAULT_VALUE);
+
+	register_syscore_ops(&mt_scp_dvfs_syscore_ops);
 
 	return 0;
 fail:

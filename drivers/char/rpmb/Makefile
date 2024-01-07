@@ -1,4 +1,3 @@
-ifeq ($(CONFIG_MEDIATEK_SOLUTION),y)
 MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
 ccflags-y += -I$(srctree)/drivers/mmc/core
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include
@@ -25,6 +24,13 @@ ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/rpmb/drrpmb_gp/public
 ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/rpmb/tlrpmb/public
 endif
 
+ifeq ($(CONFIG_TEEGRIS_TEE_SUPPORT),y)
+ccflags-y += -I$(srctree)/drivers/tee/tzdev/include/tzdev
+ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/rpmb/drrpmb/public
+ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/rpmb/drrpmb_gp/public
+ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/rpmb/tlrpmb/public
+endif
+
 #
 # Attention:
 # Enabling/using CFG_RPMB_KEY_PROGRAMED_IN_KERNEL means accepting the
@@ -39,7 +45,6 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/fde_aes/$(MTK_PLATFORM)
 endif
 
 obj-$(CONFIG_RPMB) += rpmb-mtk.o
-endif
 
 obj-$(CONFIG_RPMB) += rpmb.o
 rpmb-objs += core.o

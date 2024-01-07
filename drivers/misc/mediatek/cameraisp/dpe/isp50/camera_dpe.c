@@ -396,6 +396,7 @@ static struct SV_LOG_STR gSvLog[DPE_IRQ_TYPE_AMOUNT];
 	unsigned int *ptr2 = &gSvLog[irq]._cnt[ppb][logT];\
 	unsigned int str_leng;\
 	unsigned int logi;\
+	int ret; \
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	if (logT == _LOG_ERR) {\
 		str_leng = NORMAL_STR_LEN*ERR_PAGE; \
@@ -410,8 +411,11 @@ static struct SV_LOG_STR gSvLog[DPE_IRQ_TYPE_AMOUNT];
 		&(gSvLog[irq]._str[ppb][logT][gSvLog[irq]._cnt[ppb][logT]]);   \
 	avaLen = str_leng - 1 - gSvLog[irq]._cnt[ppb][logT];\
 	if (avaLen > 1) {\
-		snprintf((char *)(pDes), avaLen, fmt,\
+		ret = snprintf((char *)(pDes), avaLen, fmt,\
 			##__VA_ARGS__);   \
+		if (ret < 0) { \
+			LOG_ERR("snprintf fail(%d)\n", ret); \
+		} \
 		if ('\0' != gSvLog[irq]._str[ppb][logT][str_leng - 1]) {\
 			LOG_ERR("log str over flow(%d)", irq);\
 		} \
@@ -476,7 +480,10 @@ static struct SV_LOG_STR gSvLog[DPE_IRQ_TYPE_AMOUNT];
 			ptr = pDes = (char *)\
 			&(pSrc->_str[ppb][logT][pSrc->_cnt[ppb][logT]]);\
 			ptr2 = &(pSrc->_cnt[ppb][logT]);\
-			snprintf((char *)(pDes), avaLen, fmt, ##__VA_ARGS__);  \
+		ret = snprintf((char *)(pDes), avaLen, fmt, ##__VA_ARGS__);  \
+		if (ret < 0) { \
+			LOG_ERR("snprintf fail(%d)\n", ret); \
+		} \
 			while (*ptr++ != '\0') {\
 				(*ptr2)++;\
 			} \
@@ -3213,47 +3220,6 @@ EXIT:
 	return 0;
 }
 
-
-/*******************************************************************************
- *
- ******************************************************************************/
-static signed int DPE_mmap(struct file *pFile, struct vm_area_struct *pVma)
-{
-	long length = 0;
-	unsigned int pfn = 0x0;
-
-	length = pVma->vm_end - pVma->vm_start;
-	/*  */
-	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
-	pfn = pVma->vm_pgoff << PAGE_SHIFT;
-
-	LOG_INF(
-		"mmap:vm_pgoff(0x%lx) pfn(0x%x) phy(0x%lx) vm_start(0x%lx) vm_end(0x%lx) length(0x%lx)",
-		pVma->vm_pgoff, pfn, pVma->vm_pgoff << PAGE_SHIFT,
-			pVma->vm_start, pVma->vm_end, length);
-
-	switch (pfn) {
-	case DPE_BASE_HW:
-		if (length > DPE_REG_RANGE) {
-			LOG_ERR("mmap err:mod:0x%x len(0x%lx),REG_RANGE(0x%x)!",
-				pfn, length, DPE_REG_RANGE);
-			return -EAGAIN;
-		}
-		break;
-	default:
-		LOG_ERR("Illegal starting HW addr for mmap!");
-		return -EAGAIN;
-	}
-	if (remap_pfn_range
-	    (pVma, pVma->vm_start, pVma->vm_pgoff,
-					pVma->vm_end - pVma->vm_start,
-							pVma->vm_page_prot)) {
-		return -EAGAIN;
-	}
-	/*  */
-	return 0;
-}
-
 /*******************************************************************************
  *
  ******************************************************************************/
@@ -3267,7 +3233,7 @@ static const struct file_operations DPEFileOper = {
 	.open = DPE_open,
 	.release = DPE_release,
 	/* .flush   = mt_DPE_flush, */
-	.mmap = DPE_mmap,
+	/* .mmap = DPE_mmap, */
 	.unlocked_ioctl = DPE_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = DPE_ioctl_compat,

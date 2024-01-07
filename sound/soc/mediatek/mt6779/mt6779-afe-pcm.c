@@ -138,7 +138,12 @@ int mt6779_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 		if (runtime->stop_threshold == ~(0U))
 			ret = 0;
 		else
+/* only when adsp enable using hw semaphore to set memif */
+#if defined(CONFIG_MTK_AUDIODSP_SUPPORT)
+			ret = mtk_dsp_memif_set_enable(afe, id);
+#else
 			ret = mtk_memif_set_enable(afe, id);
+#endif
 #else
 		ret = mtk_memif_set_enable(afe, id);
 #endif
@@ -180,9 +185,7 @@ int mt6779_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 		/* enable interrupt */
 #if defined(CONFIG_SND_SOC_MTK_AUDIO_DSP)
 		if (runtime->stop_threshold != ~(0U))
-			regmap_update_bits(afe->regmap, irq_data->irq_en_reg,
-					   1 << irq_data->irq_en_shift,
-					   1 << irq_data->irq_en_shift);
+			mtk_dsp_irq_set_enable(afe, irq_data);
 #else
 		regmap_update_bits(afe->regmap, irq_data->irq_en_reg,
 				   1 << irq_data->irq_en_shift,
@@ -208,7 +211,12 @@ int mt6779_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 		if (runtime->stop_threshold == ~(0U))
 			ret = 0;
 		else
+/* only when adsp enable using hw semaphore to set memif */
+#if defined(CONFIG_MTK_AUDIODSP_SUPPORT)
+			ret = mtk_dsp_memif_set_disable(afe, id);
+#else
 			ret = mtk_memif_set_disable(afe, id);
+#endif
 #else
 		ret = mtk_memif_set_disable(afe, id);
 #endif
@@ -220,9 +228,7 @@ int mt6779_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 		/* disable interrupt */
 #if defined(CONFIG_SND_SOC_MTK_AUDIO_DSP)
 		if (runtime->stop_threshold != ~(0U))
-			regmap_update_bits(afe->regmap, irq_data->irq_en_reg,
-					   1 << irq_data->irq_en_shift,
-					   0 << irq_data->irq_en_shift);
+			mtk_dsp_irq_set_disable(afe, irq_data);
 #else
 		regmap_update_bits(afe->regmap, irq_data->irq_en_reg,
 				   1 << irq_data->irq_en_shift,
@@ -1013,273 +1019,21 @@ static int mt6779_vow_barge_in_irq_id_get(struct snd_kcontrol *kcontrol,
 #endif
 
 #if defined(CONFIG_SND_SOC_MTK_AUDIO_DSP)
-static int mt6779_adsp_primary_mem_get(struct snd_kcontrol *kcontrol,
-				       struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_PRIMARY_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_primary_mem_set(struct snd_kcontrol *kcontrol,
-				       struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_PRIMARY_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	return 0;
-}
-
-
-static int mt6779_adsp_deepbuffer_mem_get(struct snd_kcontrol *kcontrol,
-					  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_DEEPBUFFER_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_deepbuffer_mem_set(struct snd_kcontrol *kcontrol,
-					  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_DEEPBUFFER_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	return 0;
-}
-
-static int mt6779_adsp_voip_mem_get(struct snd_kcontrol *kcontrol,
-					  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_VOIP_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_voip_mem_set(struct snd_kcontrol *kcontrol,
-					  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_VOIP_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	return 0;
-}
-
-static int mt6779_adsp_playback_mem_get(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_PLAYBACK_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_playback_mem_set(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_numdl = get_dsp_task_attr(AUDIO_TASK_PLAYBACK_ID,
-					    ADSP_TASK_ATTR_MEMDL);
-	int memif_numul = get_dsp_task_attr(AUDIO_TASK_PLAYBACK_ID,
-					    ADSP_TASK_ATTR_MEMUL);
-	int memif_numref = get_dsp_task_attr(AUDIO_TASK_PLAYBACK_ID,
-					    ADSP_TASK_ATTR_MEMREF);
-	struct mtk_base_afe_memif *memifdl = &afe->memif[memif_numdl];
-	struct mtk_base_afe_memif *memiful = &afe->memif[memif_numul];
-	struct mtk_base_afe_memif *memifref;
-
-	memifdl->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	memiful->use_adsp_share_mem = ucontrol->value.integer.value[0];
-
-	if (memif_numref > 0) {
-		memifref = &afe->memif[memif_numref];
-		memifref->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	}
-
-	return 0;
-}
-
-static int mt6779_adsp_call_final_mem_get(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_CALL_FINAL_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_call_final_mem_set(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_numdl = get_dsp_task_attr(AUDIO_TASK_CALL_FINAL_ID,
-					    ADSP_TASK_ATTR_MEMDL);
-	int memif_numul = get_dsp_task_attr(AUDIO_TASK_CALL_FINAL_ID,
-					    ADSP_TASK_ATTR_MEMUL);
-	int memif_numref = get_dsp_task_attr(AUDIO_TASK_CALL_FINAL_ID,
-					    ADSP_TASK_ATTR_MEMREF);
-	struct mtk_base_afe_memif *memifdl = &afe->memif[memif_numdl];
-	struct mtk_base_afe_memif *memiful = &afe->memif[memif_numul];
-	struct mtk_base_afe_memif *memifref;
-
-	memifdl->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	memiful->use_adsp_share_mem = ucontrol->value.integer.value[0];
-
-	if (memif_numref > 0) {
-		memifref = &afe->memif[memif_numref];
-		memifref->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	}
-
-	return 0;
-}
-
-static int mt6779_adsp_ktv_mem_get(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_KTV_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_ktv_mem_set(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_numdl = get_dsp_task_attr(AUDIO_TASK_KTV_ID,
-					    ADSP_TASK_ATTR_MEMDL);
-	int memif_numul = get_dsp_task_attr(AUDIO_TASK_KTV_ID,
-					    ADSP_TASK_ATTR_MEMUL);
-	int memif_numref = get_dsp_task_attr(AUDIO_TASK_KTV_ID,
-					    ADSP_TASK_ATTR_MEMREF);
-	struct mtk_base_afe_memif *memifdl = &afe->memif[memif_numdl];
-	struct mtk_base_afe_memif *memiful = &afe->memif[memif_numul];
-	struct mtk_base_afe_memif *memifref;
-
-	memifdl->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	memiful->use_adsp_share_mem = ucontrol->value.integer.value[0];
-
-	if (memif_numref > 0) {
-		memifref = &afe->memif[memif_numref];
-		memifref->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	}
-
-	return 0;
-}
-
-static int mt6779_adsp_offload_mem_get(struct snd_kcontrol *kcontrol,
-				       struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_OFFLOAD_ID,
-					  ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_offload_mem_set(struct snd_kcontrol *kcontrol,
-				       struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_OFFLOAD_ID,
-			ADSP_TASK_ATTR_MEMDL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	return 0;
-}
-static int mt6779_adsp_capture_mem_get(struct snd_kcontrol *kcontrol,
-				       struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_CAPTURE_UL1_ID,
-					  ADSP_TASK_ATTR_MEMUL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
-
-}
-
-static int mt6779_adsp_capture_mem_set(struct snd_kcontrol *kcontrol,
-				       struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_CAPTURE_UL1_ID,
-					  ADSP_TASK_ATTR_MEMUL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
-
-	memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
-	return 0;
-}
-
 static int mt6779_adsp_ref_mem_get(struct snd_kcontrol *kcontrol,
 				       struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
+	struct mtk_base_afe_memif *memif;
 	int memif_num = get_dsp_task_attr(AUDIO_TASK_CAPTURE_UL1_ID,
 					  ADSP_TASK_ATTR_MEMREF);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
+	if (memif_num < 0)
+		return 0;
 
+	memif = &afe->memif[memif_num];
 	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
 
+	return 0;
 }
 
 static int mt6779_adsp_ref_mem_set(struct snd_kcontrol *kcontrol,
@@ -1287,41 +1041,113 @@ static int mt6779_adsp_ref_mem_set(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
+	struct mtk_base_afe_memif *memif;
 	int memif_num = get_dsp_task_attr(AUDIO_TASK_CAPTURE_UL1_ID,
 					  ADSP_TASK_ATTR_MEMREF);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
+	if (memif_num < 0)
+		return 0;
 
+	memif = &afe->memif[memif_num];
 	memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
+
 	return 0;
 }
 
-static int mt6779_adsp_a2dp_mem_get(struct snd_kcontrol *kcontrol,
+static int mt6779_adsp_mem_get(struct snd_kcontrol *kcontrol,
 					struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_num = get_dsp_task_attr(AUDIO_TASK_DATAPROVIDER_ID,
-					  ADSP_TASK_ATTR_MEMUL);
-	struct mtk_base_afe_memif *memif = &afe->memif[memif_num];
+	struct mtk_base_afe_memif *memif;
+	int memif_num = -1;
+	int task_id = get_dsp_task_id_from_str(kcontrol->id.name);
 
+	switch (task_id) {
+	case AUDIO_TASK_PRIMARY_ID:
+	case AUDIO_TASK_DEEPBUFFER_ID:
+	case AUDIO_TASK_OFFLOAD_ID:
+	case AUDIO_TASK_PLAYBACK_ID:
+	case AUDIO_TASK_CALL_FINAL_ID:
+	case AUDIO_TASK_KTV_ID:
+	case AUDIO_TASK_VOIP_ID:
+		memif_num = get_dsp_task_attr(task_id,
+					      ADSP_TASK_ATTR_MEMDL);
+		break;
+	case AUDIO_TASK_CAPTURE_UL1_ID:
+		memif_num = get_dsp_task_attr(task_id,
+					      ADSP_TASK_ATTR_MEMUL);
+		break;
+	default:
+		pr_info("%s(), task_id %d do not use shared mem\n",
+			__func__, task_id);
+		break;
+	};
+
+	if (memif_num < 0)
+		return 0;
+
+	memif = &afe->memif[memif_num];
 	ucontrol->value.integer.value[0] = memif->use_adsp_share_mem;
-	return 0;
 
+	return 0;
 }
 
-static int mt6779_adsp_a2dp_mem_set(struct snd_kcontrol *kcontrol,
+static int mt6779_adsp_mem_set(struct snd_kcontrol *kcontrol,
 					struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
-	int memif_numul = get_dsp_task_attr(AUDIO_TASK_DATAPROVIDER_ID,
-					    ADSP_TASK_ATTR_MEMUL);
-	struct mtk_base_afe_memif *memiful = &afe->memif[memif_numul];
+	struct mtk_base_afe_memif *memif;
+	int dl_memif_num = -1;
+	int ul_memif_num = -1;
+	int ref_memif_num = -1;
+	int task_id = get_dsp_task_id_from_str(kcontrol->id.name);
 
-	memiful->use_adsp_share_mem = ucontrol->value.integer.value[0];
+	switch (task_id) {
+	case AUDIO_TASK_PRIMARY_ID:
+	case AUDIO_TASK_DEEPBUFFER_ID:
+	case AUDIO_TASK_OFFLOAD_ID:
+	case AUDIO_TASK_VOIP_ID:
+		dl_memif_num = get_dsp_task_attr(task_id,
+						 ADSP_TASK_ATTR_MEMDL);
+		break;
+	case AUDIO_TASK_CAPTURE_UL1_ID:
+		ul_memif_num = get_dsp_task_attr(task_id,
+						 ADSP_TASK_ATTR_MEMUL);
+		break;
+	case AUDIO_TASK_CALL_FINAL_ID:
+	case AUDIO_TASK_PLAYBACK_ID:
+	case AUDIO_TASK_KTV_ID:
+		dl_memif_num = get_dsp_task_attr(task_id,
+						 ADSP_TASK_ATTR_MEMDL);
+		ul_memif_num = get_dsp_task_attr(task_id,
+						 ADSP_TASK_ATTR_MEMUL);
+		ref_memif_num = get_dsp_task_attr(task_id,
+						  ADSP_TASK_ATTR_MEMREF);
+		break;
+	default:
+		pr_info("%s(), task_id %d do not use shared mem\n",
+			__func__, task_id);
+		break;
+	};
+
+	if (dl_memif_num >= 0) {
+		memif = &afe->memif[dl_memif_num];
+		memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
+	}
+
+	if (ul_memif_num >= 0) {
+		memif = &afe->memif[ul_memif_num];
+		memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
+	}
+
+	if (ref_memif_num >= 0) {
+		memif = &afe->memif[ref_memif_num];
+		memif->use_adsp_share_mem = ucontrol->value.integer.value[0];
+	}
+
 	return 0;
 }
-
 #endif
 
 static const struct snd_kcontrol_new mt6779_pcm_kcontrols[] = {
@@ -1356,44 +1182,40 @@ static const struct snd_kcontrol_new mt6779_pcm_kcontrols[] = {
 #if defined(CONFIG_SND_SOC_MTK_AUDIO_DSP)
 	SOC_SINGLE_EXT("adsp_primary_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_primary_mem_get,
-		       mt6779_adsp_primary_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_deepbuffer_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_deepbuffer_mem_get,
-		       mt6779_adsp_deepbuffer_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_voip_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_voip_mem_get,
-		       mt6779_adsp_voip_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_playback_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_playback_mem_get,
-		       mt6779_adsp_playback_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_call_final_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_call_final_mem_get,
-		       mt6779_adsp_call_final_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_ktv_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_ktv_mem_get,
-		       mt6779_adsp_ktv_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_offload_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_offload_mem_get,
-		       mt6779_adsp_offload_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_capture_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_capture_mem_get,
-		       mt6779_adsp_capture_mem_set),
+		       mt6779_adsp_mem_get,
+		       mt6779_adsp_mem_set),
 	SOC_SINGLE_EXT("adsp_ref_sharemem_scenario",
 		       SND_SOC_NOPM, 0, 0x1, 0,
 		       mt6779_adsp_ref_mem_get,
 		       mt6779_adsp_ref_mem_set),
-	SOC_SINGLE_EXT("adsp_a2dp_sharemem_scenario",
-		       SND_SOC_NOPM, 0, 0x1, 0,
-		       mt6779_adsp_a2dp_mem_get,
-		       mt6779_adsp_a2dp_mem_set),
 #endif
 };
 
@@ -1459,15 +1281,15 @@ static const struct snd_kcontrol_new memif_ul2_ch2_mix[] = {
 	SOC_DAPM_SINGLE_AUTODISABLE("DL1_CH2", AFE_CONN6,
 				    I_DL1_CH2, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("DL12_CH2", AFE_CONN6,
-				    I_DL12_CH1, 1, 0),
+				    I_DL12_CH2, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("DL2_CH2", AFE_CONN6,
 				    I_DL2_CH2, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("DL3_CH2", AFE_CONN6,
 				    I_DL3_CH2, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("DL4_CH2", AFE_CONN6_1,
-				    I_DL4_CH1, 1, 0),
+				    I_DL4_CH2, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("DL6_CH2", AFE_CONN6_1,
-				    I_DL6_CH1, 1, 0),
+				    I_DL6_CH2, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("PCM_1_CAP_CH1", AFE_CONN6,
 				    I_PCM_1_CAP_CH1, 1, 0),
 	SOC_DAPM_SINGLE_AUTODISABLE("PCM_2_CAP_CH1", AFE_CONN6,

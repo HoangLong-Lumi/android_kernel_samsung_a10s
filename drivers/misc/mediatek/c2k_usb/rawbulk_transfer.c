@@ -535,7 +535,7 @@ int rawbulk_push_upstream_buffer(int transfer_id, const void *buffer,
 		total_drop[transfer_id] += length;
 
 		if (time_after(jiffies, drop_check_timeout)) {
-			C2K_NOTE("cahce full, t<%d>, drop<%d>, tota_drop<%d>\n"
+			C2K_NOTE("cache full, t<%d>, drop<%d>, tota_drop<%d>\n"
 			     , transfer_id, length, total_drop[transfer_id]);
 
 			C2K_NOTE("trans<%d>, alloc_fail<%d>, upstream<%d,%d>\n"
@@ -898,14 +898,24 @@ int rawbulk_start_transactions(int transfer_id, int nups, int ndowns, int upsz,
 		return -ENODEV;
 
 	memset(name, 0, 20);
-	snprintf(name, sizeof(name), "%s_flow_ctrl",
+	ret = snprintf(name, sizeof(name), "%s_flow_ctrl",
 			transfer_name[transfer_id]);
+	if (ret > 20)
+		C2K_NOTE("%s: transfer_name %s excced log buffer\n", __func__,
+			transfer_name[transfer_id]);
+
 	if (!transfer->flow_wq)
 		transfer->flow_wq = create_singlethread_workqueue(name);
 	if (!transfer->flow_wq)
 		return -ENOMEM;
+
 	memset(name, 0, 20);
-	snprintf(name, sizeof(name), "%s_tx_wq", transfer_name[transfer_id]);
+	ret = snprintf(name, sizeof(name), "%s_tx_wq",
+			transfer_name[transfer_id]);
+	if (ret > 20)
+		C2K_NOTE("%s: transfer_name %s excced log buffer\n", __func__,
+			transfer_name[transfer_id]);
+
 	if (!transfer->tx_wq)
 		transfer->tx_wq = create_singlethread_workqueue(name);
 	if (!transfer->tx_wq)

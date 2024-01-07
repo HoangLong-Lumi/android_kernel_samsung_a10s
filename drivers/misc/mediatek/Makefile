@@ -26,6 +26,7 @@ obj-$(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM) += trusted_mem/
 obj-$(CONFIG_MTK_ENABLE_GENIEZONE) += geniezone/
 obj-$(CONFIG_MTK_TEE_SANITY) += tee_sanity/
 obj-$(CONFIG_MTK_CMDQ) += cmdq/
+obj-$(CONFIG_MTK_CMDQ) += mdp/
 obj-$(CONFIG_MTK_LCM) += lcm/
 obj-$(CONFIG_MTK_LCM) += ext_disp/
 obj-$(CONFIG_MTK_FB) += video/
@@ -74,10 +75,6 @@ ifneq ($(CONFIG_MTK_BASE_POWER), y)
 obj-$(CONFIG_MTK_STATIC_POWER) += leakage_table_v2/
 obj-$(CONFIG_MTK_UNIFY_POWER) += upower_v2/
 endif
-ifneq (y, $(filter y, $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT6779)))
-obj-$(CONFIG_MTK_STATIC_POWER) += leakage_table_v2/
-obj-$(CONFIG_MTK_UNIFY_POWER) += upower_v2/
-endif
 
 obj-$(CONFIG_PRINTK_MTK) += mtprintk/
 obj-$(CONFIG_MTK_LEDS) += leds/
@@ -115,3 +112,7 @@ endif
 obj-y += timer/
 obj-$(CONFIG_MTK_DBGTOP) += dbgtop/
 obj-$(CONFIG_MTK_DFD_INTERNAL_DUMP) += dfd/
+obj-$(CONFIG_MTK_GIC_EXT) += ext_gic/
+obj-$(CONFIG_MTK_SYS_CIRQ) += cirq/
+obj-$(CONFIG_MTK_SECURITY_SW_SUPPORT) += masp/
+obj-y += rps/

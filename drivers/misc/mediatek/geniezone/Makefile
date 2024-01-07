@@ -30,7 +30,7 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/ppm_v3/src/mach/$(CON
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include/ppm_v3
 endif
 
-ifeq ($(CONFIG_TEE),y)
+ifeq ($(CONFIG_MTK_TEE_GP_SUPPORT),y)
   ccflags-y += -I$(srctree)/arch/arm/mach-$(MTK_PLATFORM)/include/trustzone/utils/tlutils
   ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include/trustzone/utils/tlutils
   ccflags-y += -I$(src)/$(MTK_PLATFORM)
@@ -40,8 +40,8 @@ ifeq ($(CONFIG_TEE),y)
     include $(srctree)/drivers/tee/gud/Makefile.include
   else ifneq ($(filter y m, $(CONFIG_MICROTRUST_TEE_SUPPORT)),)
     include $(srctree)/drivers/tee/teei/Makefile.include
-  #else ifeq ($(CONFIG_BLOWFISH_TEE_SUPPORT),y)
-  # ccflags-y += -I$(srctree)/drivers/misc/tzdev
+  else ifneq ($(filter y m, $(CONFIG_TZDEV)),)
+    include $(srctree)/drivers/tee/tzdev/Makefile.include
   else
   endif
 else # Legacy
@@ -51,7 +51,7 @@ else # Legacy
     ccflags-y += -I$(src)/$(MTK_PLATFORM)
     include $(srctree)/drivers/tee/gud/Makefile.include
   endif
-endif # !CONFIG_TEE
+endif # !CONFIG_MTK_TEE_GP_SUPPORT
 
 
 obj-$(CONFIG_MTK_GZ_MAIN) += gz_main_mod.o

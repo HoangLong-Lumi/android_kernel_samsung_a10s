@@ -10,7 +10,7 @@
  *  Various enhancements by Dmitry Adamushko.
  *  (C) 2007 Dmitry Adamushko <dmitry.adamushko@gmail.com>
  *
- *  Group scheduling enhancements by Srivatsa Vaddagiri
+ *  Group scheduling enhancements by Srivatsa Vaddagiri109
  *  Copyright IBM Corporation, 2007
  *  Author: Srivatsa Vaddagiri <vatsa@linux.vnet.ibm.com>
  *
@@ -6688,10 +6688,6 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 
 			if (cpu_isolated(i))
 				continue;
-#ifdef CONFIG_MTK_SCHED_BIG_TASK_MIGRATE
-			if (is_reserved(i))
-				continue;
-#endif
 
 #ifdef CONFIG_MTK_SCHED_INTEROP
 			if (cpu_rq(i)->rt.rt_nr_running &&
@@ -10295,12 +10291,8 @@ out_unlock:
 	busiest_rq->active_balance = 0;
 	rq_unlock(busiest_rq, &rf);
 
-	if (p) {
+	if (p)
 		attach_one_task(target_rq, p);
-#ifdef CONFIG_MTK_SCHED_BIG_TASK_MIGRATE
-		clear_reserved(target_cpu);
-#endif
-	}
 
 	local_irq_enable();
 
@@ -10928,7 +10920,12 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 		if (sd)
 			update_next_balance(sd, &next_balance);
 		rcu_read_unlock();
-
+#ifdef CONFIG_MTK_IDLE_BALANCE_ENHANCEMENT
+		if (!this_rq->rd->overload) {
+			raw_spin_unlock(&this_rq->lock);
+			goto hinted_idle_pull;
+		}
+#endif
 		nohz_newidle_balance(this_rq);
 
 		goto out;
@@ -10976,6 +10973,7 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 	rcu_read_unlock();
 
 #ifdef CONFIG_MTK_IDLE_BALANCE_ENHANCEMENT
+hinted_idle_pull:
 	/* We could not pull task to this_cpu when this_rq offline */
 	if (this_rq->online && !pulled_task)
 		pulled_task = aggressive_idle_pull(this_cpu);
@@ -11076,6 +11074,7 @@ void task_check_for_rotation(struct rq *src_rq)
 	struct rq *dst_rq;
 	struct task_rotate_work *wr = NULL;
 	int heavy_task = 0;
+	int force = 0;
 
 	if (!big_task_rotation_enable)
 		return;
@@ -11098,8 +11097,8 @@ void task_check_for_rotation(struct rq *src_rq)
 	for_each_possible_cpu(i) {
 		struct rq *rq = cpu_rq(i);
 
-		if (is_max_capacity_cpu(i))
-			break;
+		if (!is_min_capacity_cpu(i))
+			continue;
 
 		if (is_reserved(i))
 			continue;
@@ -11123,7 +11122,7 @@ void task_check_for_rotation(struct rq *src_rq)
 	for_each_possible_cpu(i) {
 		struct rq *rq = cpu_rq(i);
 
-		if (!is_max_capacity_cpu(i))
+		if (capacity_orig_of(i) <= capacity_orig_of(src_cpu))
 			continue;
 
 		if (is_reserved(i))
@@ -11154,25 +11153,38 @@ void task_check_for_rotation(struct rq *src_rq)
 
 	double_rq_lock(src_rq, dst_rq);
 	if (dst_rq->curr->sched_class == &fair_sched_class) {
-		get_task_struct(src_rq->curr);
-		get_task_struct(dst_rq->curr);
+		if (!cpumask_test_cpu(dst_cpu,
+					&(src_rq->curr)->cpus_allowed) ||
+			!cpumask_test_cpu(src_cpu,
+					&(dst_rq->curr)->cpus_allowed)) {
+			double_rq_unlock(src_rq, dst_rq);
+			return;
+		}
 
-		mark_reserved(src_cpu);
-		mark_reserved(dst_cpu);
-		wr = &per_cpu(task_rotate_works, src_cpu);
+		if (!src_rq->active_balance && !dst_rq->active_balance) {
+			src_rq->active_balance = MIGR_ROTATION;
+			dst_rq->active_balance = MIGR_ROTATION;
 
-		wr->src_task = src_rq->curr;
-		wr->dst_task = dst_rq->curr;
+			get_task_struct(src_rq->curr);
+			get_task_struct(dst_rq->curr);
 
-		wr->src_cpu = src_cpu;
-		wr->dst_cpu = dst_cpu;
+			wr = &per_cpu(task_rotate_works, src_cpu);
+
+			wr->src_task = src_rq->curr;
+			wr->dst_task = dst_rq->curr;
+
+			wr->src_cpu = src_rq->cpu;
+			wr->dst_cpu = dst_rq->cpu;
+			force = 1;
+		}
 	}
 	double_rq_unlock(src_rq, dst_rq);
 
-	if (wr) {
+	if (force) {
 		queue_work_on(src_cpu, system_highpri_wq, &wr->w);
-		trace_sched_big_task_rotation(src_cpu, dst_cpu,
-					src_rq->curr->pid, dst_rq->curr->pid);
+		trace_sched_big_task_rotation(wr->src_cpu, wr->dst_cpu,
+					wr->src_task->pid, wr->dst_task->pid,
+					false, set_uclamp);
 	}
 }
 
@@ -11183,6 +11195,24 @@ void check_for_migration(struct task_struct *p)
 	int new_cpu;
 	int cpu = task_cpu(p);
 	struct rq *rq = cpu_rq(cpu);
+	int i, heavy_task = 0;
+	struct task_rotate_reset_uclamp_work *wr = NULL;
+
+	for_each_possible_cpu(i) {
+		struct rq *rq = cpu_rq(i);
+		struct task_struct *curr_task = rq->curr;
+
+		if (curr_task &&
+			!task_fits_capacity(curr_task, capacity_of(i)))
+			heavy_task += 1;
+	}
+
+	if (heavy_task < HEAVY_TASK_NUM && set_uclamp) {
+		wr = &task_rotate_reset_uclamp_works;
+		if (wr) {
+			queue_work_on(cpu, system_highpri_wq, &wr->w);
+		}
+	}
 
 	if (rq->misfit_task_load) {
 		if (rq->curr->state != TASK_RUNNING ||
@@ -11211,7 +11241,6 @@ void check_for_migration(struct task_struct *p)
 				return;
 			}
 
-			mark_reserved(new_cpu);
 			raw_spin_unlock(&migration_lock);
 			get_task_struct(p);
 			migrate_running_task(new_cpu, p, rq);

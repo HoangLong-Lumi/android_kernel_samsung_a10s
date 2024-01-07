@@ -72,7 +72,7 @@ int get_layering_opt(enum LYE_HELPER_OPT opt)
 #ifdef CONFIG_MTK_ROUND_CORNER_SUPPORT
 void set_round_corner_opt(enum LYE_HELPER_OPT opt, int value)
 {
-	if (opt >= LYE_OPT_NUM) {
+	if (opt >= LYE_OPT_NUM || opt < 0) {
 		DISPMSG("%s invalid round corner opt:%d\n", __func__, opt);
 		return;
 	}
@@ -82,7 +82,7 @@ void set_round_corner_opt(enum LYE_HELPER_OPT opt, int value)
 
 int get_round_corner_opt(enum LYE_HELPER_OPT opt)
 {
-	if (opt >= LYE_OPT_NUM) {
+	if (opt >= LYE_OPT_NUM || opt < 0) {
 		DISPMSG("%s invalid round corner opt:%d\n", __func__, opt);
 		return -1;
 	}
@@ -579,7 +579,11 @@ void rollback_layer_to_GPU(struct disp_layer_info *disp_info, int disp_idx,
 {
 	if (is_layer_id_valid(disp_info, disp_idx, i) == false)
 		return;
-
+	if (disp_idx < 0 || disp_idx > 1) {
+		DISPMSG("%s: error disp_idx:%d\n",
+			__func__, disp_idx);
+		return;
+	}
 	if (disp_info->gles_head[disp_idx] == -1 ||
 	    disp_info->gles_head[disp_idx] > i)
 		disp_info->gles_head[disp_idx] = i;
@@ -596,6 +600,11 @@ void rollback_compress_layer_to_GPU(struct disp_layer_info *disp_info,
 	if (is_layer_id_valid(disp_info, disp_idx, i) == false)
 		return;
 
+	if (disp_idx < 0 || disp_idx > 1) {
+		DISPMSG("%s: error disp_idx:%d\n",
+			__func__, disp_idx);
+		return;
+	}
 	if (disp_info->input_config[disp_idx][i].compress == 0)
 		return;
 
@@ -862,6 +871,9 @@ static int ext_id_tuning(struct disp_layer_info *info, int disp)
 	int rc_opt = get_round_corner_opt(LYE_OPT_ROUND_CORNER);
 	int rc_mode = get_round_corner_mode(rc_opt);
 #endif
+
+	if (disp < 0)
+		return -EFAULT;
 
 	if (info->layer_num[disp] <= 0)
 		return 0;

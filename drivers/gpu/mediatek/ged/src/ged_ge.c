@@ -16,9 +16,7 @@
 #include <linux/seq_file.h>
 #include <linux/anon_inodes.h>
 
-#ifdef GED_DEBUG_FS
-#include <ged_debugFS.h>
-#endif
+#include <linux/kmemleak.h>
 
 struct GEEntry {
 	uint64_t unique_id;
@@ -38,10 +36,6 @@ struct GEEntry {
 	pr_debug("[GRALLOC_EXTRA,%s:%d]" fmt, __FILE__, __LINE__, ##__VA_ARGS__)
 
 static struct kmem_cache *gPoolCache;
-#ifdef GED_DEBUG_FS
-static struct dentry *gDFSEntry;
-static int num_entry;
-#endif
 static LIST_HEAD(ge_entry_list_head);
 static DEFINE_SPINLOCK(ge_entry_list_lock);
 
@@ -64,73 +58,6 @@ static uint64_t gen_unique_id(void)
 
 	return ret;
 }
-
-//-----------------------------------------------------------------------------
-#ifdef GED_DEBUG_FS
-static void *_ge_debugfs_seq_start(struct seq_file *m, loff_t *pos)
-{
-	if (*pos == 0) {
-		seq_puts(m,
-			"================================================\n");
-		num_entry = (int)*pos;
-		return list_first_entry(&ge_entry_list_head,
-			struct GEEntry, ge_entry_list);
-	}
-	return NULL;
-}
-
-void _ge_debugfs_seq_stop(struct seq_file *m, void *v)
-{
-	seq_puts(m, "================================================\n");
-	seq_printf(m, "Total entries: %d\n", num_entry);
-	/* do nothing */
-}
-
-void *_ge_debugfs_seq_next(struct seq_file *m, void *v, loff_t *pos)
-{
-	struct list_head *next = ((struct GEEntry *)v)->ge_entry_list.next;
-
-	num_entry = (int)++*pos;
-	return (next != &ge_entry_list_head) ?
-		list_entry(next, struct GEEntry, ge_entry_list) : NULL;
-}
-
-int _ge_debugfs_seq_show(struct seq_file *m, void *v)
-{
-	const struct GEEntry *entry = v;
-	int memory_size = 0;
-	int memory_ksize = 0;
-	int i;
-
-	memory_size +=
-		(sizeof(uint32_t) + sizeof(uint32_t *)) * entry->region_num;
-	memory_ksize += ksize(entry->data);
-	for (i = 0; i < entry->region_num; ++i) {
-		if (entry->region_data[i]) {
-			memory_size += entry->region_sizes[i];
-			memory_ksize += ksize(entry->region_data[i]);
-		}
-	}
-	seq_printf(m,
-		"GEEntry id:0x%llx memory size: %d bytes, ksize: %3d bytes\n",
-			entry->unique_id, memory_size, memory_ksize);
-	return 0;
-}
-
-static const struct seq_operations gDEFEntryOps = {
-	.start = _ge_debugfs_seq_start,
-	.stop = _ge_debugfs_seq_stop,
-	.next = _ge_debugfs_seq_next,
-	.show = _ge_debugfs_seq_show,
-};
-
-static ssize_t _ge_debugfs_write_entry(const char __user *pszBuffer,
-	size_t uiCount, loff_t uiPosition, void *pvData)
-{
-	return uiCount;
-}
-#endif /* GED_DEBUG_FS */
-//-----------------------------------------------------------------------------
 
 static int ge_entry_release(struct inode *inode, struct file *file)
 {
@@ -162,29 +89,11 @@ GED_ERROR ged_ge_init(void)
 	gPoolCache = kmem_cache_create("gralloc_extra",
 		sizeof(struct GEEntry), 0, flags, NULL);
 
-#ifdef GED_DEBUG_FS
-	err = ged_debugFS_create_entry(
-			"ge",
-			NULL,
-			&gDEFEntryOps,
-			_ge_debugfs_write_entry,
-			NULL,
-			&gDFSEntry);
-	if (unlikely(err != GED_OK)) {
-		GED_PDEBUG("failed to create ge entry!\n");
-		return err;
-	}
-#endif
-
 	return err;
 }
 
 int ged_ge_exit(void)
 {
-#ifdef GED_DEBUG_FS
-	ged_debugFS_remove_entry(gDFSEntry);
-#endif
-
 	/* TODO : free all memory */
 	kmem_cache_destroy(gPoolCache);
 
@@ -300,6 +209,8 @@ int ged_ge_get(int ge_fd, int region_id, int u32_offset,
 
 	if (file == NULL || file->f_op != &GEEntry_fops) {
 		GED_PDEBUG("fail, invalid ge_fd %d\n", ge_fd);
+		if (file)
+			fput(file);
 		return -EFAULT;
 	}
 
@@ -340,6 +251,8 @@ int ged_ge_set(int ge_fd, int region_id, int u32_offset,
 
 	if (file == NULL || file->f_op != &GEEntry_fops) {
 		GED_PDEBUG("fail, invalid ge_fd %d\n", ge_fd);
+		if (file)
+			fput(file);
 		return -EFAULT;
 	}
 
@@ -352,7 +265,7 @@ int ged_ge_set(int ge_fd, int region_id, int u32_offset,
 
 	spin_lock_irqsave(&ge_raf_lock, flags);
 	while (!entry->region_data[region_id]) {
-		void *data;
+		void *data = NULL;
 
 		spin_unlock_irqrestore(&ge_raf_lock, flags);
 		data = kzalloc(entry->region_sizes[region_id], GFP_KERNEL);
@@ -376,6 +289,9 @@ int ged_ge_set(int ge_fd, int region_id, int u32_offset,
 		}
 
 		entry->region_data[region_id] = data;
+
+		/* Avoid kmemleak scan false positive */
+		kmemleak_ignore(data);
 	}
 
 	pregion_data = entry->region_data[region_id];
@@ -402,8 +318,33 @@ int ged_bridge_ge_alloc(
 
 int ged_bridge_ge_get(
 	struct GED_BRIDGE_IN_GE_GET *psGET_IN,
-	struct GED_BRIDGE_OUT_GE_GET *psGET_OUT)
+	struct GED_BRIDGE_OUT_GE_GET *psGET_OUT,
+	int output_package_size)
 {
+	/* in gpu_ext/ged/lib/ged_ge.cpp. ged_ge_get()
+	 * iOutSize will show the header size and data size.
+	 */
+	int header_size = sizeof(struct GED_BRIDGE_OUT_GE_GET);
+
+	if (psGET_IN->uint32_offset < 0 ||
+			psGET_IN->uint32_offset >= 0x20000000ULL ||
+			psGET_IN->uint32_size < 0 ||
+			psGET_IN->uint32_size >= 0x20000000ULL) {
+		pr_info("[%s] invalid offset(%d) or size(%d)",
+				__func__,
+				psGET_IN->uint32_offset,
+				psGET_IN->uint32_size);
+		return -EFAULT;
+	}
+	if ((output_package_size - header_size) !=
+		psGET_IN->uint32_size * sizeof(uint32_t)) {
+		pr_info("[%s] data (%d byte) != u32_size (%d byte)",
+			__func__,
+			(int)(output_package_size - header_size),
+			(int)(psGET_IN->uint32_size * sizeof(uint32_t)));
+		return -EFAULT;
+	}
+
 	psGET_OUT->eError = ged_ge_get(
 			psGET_IN->ge_fd,
 			psGET_IN->region_id,
@@ -415,8 +356,31 @@ int ged_bridge_ge_get(
 
 int ged_bridge_ge_set(
 	struct GED_BRIDGE_IN_GE_SET *psSET_IN,
-	struct GED_BRIDGE_OUT_GE_SET *psSET_OUT)
+	struct GED_BRIDGE_OUT_GE_SET *psSET_OUT,
+	int input_package_size)
 {
+
+	int header_size = sizeof(struct GED_BRIDGE_IN_GE_SET);
+
+	if (psSET_IN->uint32_offset < 0 ||
+			psSET_IN->uint32_offset >= 0x20000000ULL ||
+			psSET_IN->uint32_size < 0 ||
+			psSET_IN->uint32_size >= 0x20000000ULL) {
+		pr_info("[%s] invalid offset(%d) or size(%d)",
+				__func__,
+				psSET_IN->uint32_offset,
+				psSET_IN->uint32_size);
+		return -EFAULT;
+	}
+	if ((input_package_size - header_size) !=
+		psSET_IN->uint32_size * sizeof(uint32_t)) {
+		pr_info("[%s] data (%d byte) != u32_size (%d byte)",
+			__func__,
+			(int)(input_package_size - header_size),
+			(int)(psSET_IN->uint32_size * sizeof(uint32_t)));
+		return -EFAULT;
+	}
+
 	psSET_OUT->eError = ged_ge_set(
 			psSET_IN->ge_fd,
 			psSET_IN->region_id,
@@ -434,6 +398,8 @@ int ged_bridge_ge_info(
 
 	if (file == NULL || file->f_op != &GEEntry_fops) {
 		GED_PDEBUG("ged_ge fail, invalid ge_fd %d\n", psINFO_IN->ge_fd);
+		if (file)
+			fput(file);
 		return -EFAULT;
 	}
 

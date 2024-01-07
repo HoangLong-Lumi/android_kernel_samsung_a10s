@@ -44,7 +44,7 @@
 #include "mt_fhreg.h"
 #endif
 
-#if IS_ENABLED(CONFIG_MTK_DYNAMIC_LOADING_POWER_THROTTLING)
+#if IS_ENABLED(CONFIG_MTK_PBM)
 #include "mt-plat/mtk_pbm.h"
 #endif
 
@@ -592,6 +592,12 @@ unsigned int mt_gpufreq_get_volt_by_idx(unsigned int idx)
 	return 0;
 }
 
+/* API: pass GPU power table to EARA-QoS */
+struct mt_gpufreq_power_table_info *pass_gpu_table_to_eara(void)
+{
+	return g_power_table;
+}
+
 /* API : get max power on power table */
 unsigned int mt_gpufreq_get_max_power(void)
 {
@@ -940,6 +946,13 @@ void mt_gpufreq_set_power_limit_by_pbm(unsigned int limited_power)
 
 	mutex_unlock(&mt_gpufreq_power_lock);
 }
+
+/* API : get current GPU temperature */
+int mt_gpufreq_get_gpu_temp(void)
+{
+	return get_immediate_gpu_wrap();
+}
+EXPORT_SYMBOL(mt_gpufreq_get_gpu_temp);
 
 /*
  * API : set GPU loading for SSPM
@@ -1964,7 +1977,7 @@ static void __mt_gpufreq_low_batt_protect(unsigned int limited_index)
  */
 static void __mt_gpufreq_kick_pbm(int enable)
 {
-#if IS_ENABLED(CONFIG_MTK_DYNAMIC_LOADING_POWER_THROTTLING)
+#if IS_ENABLED(CONFIG_MTK_PBM)
 	unsigned int power;
 	unsigned int cur_freq;
 	unsigned int cur_volt;
@@ -2023,7 +2036,7 @@ static void __mt_gpufreq_kick_pbm(int enable)
 	} else {
 		kicker_pbm_by_gpu(false, 0, cur_volt / 100);
 	}
-#endif /* CONFIG_MTK_DYNAMIC_LOADING_POWER_THROTTLING */
+#endif /* CONFIG_MTK_PBM */
 }
 
 /*

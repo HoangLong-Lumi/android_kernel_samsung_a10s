@@ -438,7 +438,7 @@ static void ccci_dump_opt_tbl(void)
 static void parse_option_setting_from_lk(void)
 {
 	int i = 0;
-	int val;
+	int val = 0;
 	char *name;
 	int using_default = 1;
 	int using_lk_setting;
@@ -826,7 +826,7 @@ static void md_mem_info_parsing(void)
 {
 	struct _modem_info md_inf[4];
 	struct _modem_info *curr;
-	int md_num;
+	int md_num = 0;
 	int md_id;
 
 	if (find_ccci_tag_inf("hdr_count",
@@ -1192,12 +1192,32 @@ static void dump_retrieve_info(void)
 	}
 }
 
+static struct device_node *find_chosen_node(void)
+{
+	struct device_node *np_chosen = NULL;
+
+	np_chosen = of_find_node_by_path("/chosen");
+	if (!np_chosen) {
+		CCCI_UTIL_ERR_MSG("warning: not find node: '/chosen'\n");
+
+		np_chosen = of_find_node_by_path("/chosen@0");
+		if (!np_chosen) {
+			CCCI_UTIL_ERR_MSG("error: not find node: '/chosen@0'\n");
+
+			return NULL;
+		}
+	}
+
+	return np_chosen;
+}
+
 static int __init collect_lk_boot_arguments(void)
 {
 	/* Device tree method */
 	struct device_node *node = NULL;
 	int ret;
 	unsigned int *raw_ptr;
+	struct device_node *np_chosen = NULL;
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mddriver");
 	if (!node) {
@@ -1211,6 +1231,21 @@ static int __init collect_lk_boot_arguments(void)
 		if (lk_info_parsing_v2(raw_ptr) == 1) /* No md enabled in LK */
 			return 0;
 		goto _common_process;
+	} else {
+		np_chosen = find_chosen_node();
+		if (np_chosen) {
+			raw_ptr = (unsigned int *)of_get_property(
+					np_chosen,
+					"ccci,modem_info_v2", NULL);
+			if (raw_ptr) {
+				if (lk_info_parsing_v2(raw_ptr) == 1) /* No md enabled in LK */
+					return 0;
+
+				goto _common_process;
+			}
+
+		} else
+			CCCI_UTIL_ERR_MSG("device node no chosen node\n");
 	}
 
 	CCCI_UTIL_INF_MSG("ccci,modem_info_v2 not found, try v1\n");
@@ -1269,14 +1304,26 @@ int get_lk_load_md_info(char buf[], int size)
 	int i;
 	int has_write;
 
-	if (s_g_lk_load_img_status & LK_LOAD_MD_EN)
+	if (s_g_lk_load_img_status & LK_LOAD_MD_EN) {
 		has_write = snprintf(buf, size,
 			"LK Load MD:[Enabled](0x%08x)\n",
 			s_g_lk_load_img_status);
-	else {
+		if (has_write < 0) {
+			CCCI_UTIL_INF_MSG("%s-%d:snprintf fail,has_write=%d,status=%d\n",
+				__func__, __LINE__, has_write, s_g_lk_load_img_status);
+			has_write = 0;
+		} else if (has_write >= size)
+			has_write = size - 1;
+	} else {
 		has_write = snprintf(buf, size,
 			"LK Load MD:[Disabled](0x%08x)\n",
 			s_g_lk_load_img_status);
+		if (has_write < 0) {
+			CCCI_UTIL_INF_MSG("%s-%d:snprintf fail,has_write=%d,status=%d\n",
+				__func__, __LINE__, has_write, s_g_lk_load_img_status);
+			has_write = 0;
+		} else if (has_write >= size)
+			has_write = size - 1;
 		return has_write;
 	}
 
@@ -1630,8 +1677,13 @@ static void cal_md_settings(int md_id)
 	struct device_node *node2 = NULL;
 	int val;
 
-	snprintf(tmp_buf, sizeof(tmp_buf),
+	val = snprintf(tmp_buf, sizeof(tmp_buf),
 		"opt_md%d_support", (md_id + 1));
+	if (val < 0 || val >= sizeof(tmp_buf)) {
+		CCCI_UTIL_ERR_MSG_WITH_ID(md_id,
+			"%s-%d:snprintf fail.val=%d\n", __func__, __LINE__, val);
+		return;
+	}
 	/* MTK_ENABLE_MD* */
 	val = ccci_get_opt_val(tmp_buf);
 	if (val > 0) {

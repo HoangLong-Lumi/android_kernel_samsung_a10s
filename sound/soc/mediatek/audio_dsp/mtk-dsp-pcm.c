@@ -140,8 +140,10 @@ static int dsp_pcm_dev_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dsp);
 	pm_runtime_enable(&pdev->dev);
 
-	if (pdev->dev.of_node)
-		dev_set_name(&pdev->dev, "%s", "snd_audio_dsp");
+	if (pdev->dev.of_node) {
+		pr_info("%s of_node->name:%s fullname:%s\n", __func__,
+			pdev->dev.of_node->name, pdev->dev.of_node->full_name);
+	}
 
 	ret = snd_soc_register_component(&pdev->dev,
 					 &mtk_dsp_pcm_platform, NULL, 0);
@@ -154,19 +156,28 @@ static int dsp_pcm_dev_probe(struct platform_device *pdev)
 					      dsp->component_driver,
 					      dsp->dai_drivers,
 					      dsp->num_dai_drivers);
-	init_mtk_adsp_dram_segment();
-	dsp_pcm_taskattr_init(pdev);
+
 	set_ipi_recv_private((void *)dsp);
 	set_dsp_base((void *)dsp);
+	dsp_pcm_taskattr_init(pdev);
+
+	ret = init_mtk_adsp_dram_segment();
+	if (ret) {
+		pr_info("init_mtk_adsp_dram_segment fail\n");
+		goto err_platform;
+	}
+	dump_all_adsp_dram();
 
 	ret = mtk_adsp_init_gen_pool(dsp);
-	if (ret)
+	if (ret) {
 		pr_info("init_gen_pool fail\n");
-
+		goto err_platform;
+	}
 	ret = mtk_init_adsp_audio_share_mem(dsp);
-	if (ret)
+	if (ret) {
 		pr_info("init share mem fail\n");
-
+		goto err_platform;
+	}
 	pr_info("%s share mem\n", __func__);
 
 	mtk_audio_register_notify();
